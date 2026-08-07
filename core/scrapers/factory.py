@@ -4,8 +4,9 @@ Dispatch happens on the source's ``scraper_type`` (graphql / rest / html /
 ...), with a per-slug override registry for websites that share a
 scraper_type but need their own site-specific detail saving (e.g. HaHuJobs
 reuses the GraphQL pipeline but writes its own HaHuJob detail rows +
-HaHuScrapeLog, and GeezJobs reuses the HTML pipeline with its own GeezJob
-rows + GeezScrapeLog).
+HaHuScrapeLog, GeezJobs reuses the HTML pipeline with its own GeezJob rows +
+GeezScrapeLog, and Ethiopian Reporter Jobs does the same with ReporterJob +
+ReporterScrapeLog).
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from .geezjobs import GeezJobsScraper
 from .graphql import GraphQLScraper
 from .hahujobs import HaHuJobsScraper
 from .html import HtmlScraper
+from .reporterjobs import ReporterJobsScraper
 from .rest import RestJsonScraper
 
 
@@ -34,6 +36,7 @@ class ScraperFactory:
     _slug_registry: dict[str, type[BaseScraper]] = {
         "hahujobs": HaHuJobsScraper,
         "geezjobs": GeezJobsScraper,
+        "reporterjobs": ReporterJobsScraper,
     }
 
     @classmethod

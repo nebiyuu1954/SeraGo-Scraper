@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -27,6 +28,8 @@ from core.models import (
     GeezScrapeLog,
     HaHuJob,
     HaHuScrapeLog,
+    ReporterJob,
+    ReporterScrapeLog,
     ScrapeLog,
     ScrapeStatus,
     ScrapedItem,
@@ -38,6 +41,7 @@ from core.scrapers.geezjobs import GeezJobsScraper
 from core.scrapers.graphql import GraphQLScraper
 from core.scrapers.hahujobs import HaHuJobsScraper
 from core.scrapers.html import HtmlScraper
+from core.scrapers.reporterjobs import ReporterJobsScraper
 from core.scrapers.rest import RestJsonScraper
 from core.structures import (
     compare_structures,
@@ -451,6 +455,72 @@ GEEZJOBS_SAMPLE_PATHS = [
     "posted_text",
     "published_at",
     "slug",
+    "title",
+    "url",
+]
+
+# A faithful minimal listing page for Ethiopian Reporter Jobs (WordPress / Noo
+# Job Board theme). It mirrors the live /jobs-in-ethiopia/ markup: one
+# article.noo_job per listing with h3.loop-item-title, .job-company, .job-type,
+# .job-location and a <time class="entry-date" datetime="..."> carrying the
+# exact posted timestamp plus the posted/closing date spans. The listings
+# archive container (div.jobs.posts-loop) marks a real listings page. Two
+# cards: one posted today, one 3 days ago (the client-side today filter must
+# drop the old one and end the sweep on it).
+REPORTER_SAMPLE_HTML = """<!DOCTYPE html>
+<html lang="en-US"><head><meta charset="UTF-8"><title>Job Vacancy In Ethiopia - Ethiopian Reporter Jobs</title></head>
+<body>
+  <div class="jobs posts-loop">
+    <div class="posts-loop-content noo-job-list-row">
+      <article class="nextajax-item noo_job style-1 post-284574 type-noo_job status-publish hentry" data-url="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/">
+        <h3 class="loop-item-title"><a href="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/">Property Administrator</a></h3>
+        <div class="loop-item-wrap list">
+          <span class="job-company"><a href="#"><span>LANCET GENERAL HOSPITAL</span></a></span>
+          <span class="job-type"><a href="/job-type/full-time/"><i class="fa fa-bookmark"></i><span>Full Time</span></a></span>
+          <span class="job-location" itemprop="jobLocation"><a href="/job-location/jobs-in-addis-ababa/"><em>Addis Ababa</em></a></span>
+          <span class="job-date"><time class="entry-date" datetime="2026-08-07T06:00:53+03:00"><span class="job-date__posted">August 7, 2026</span><span class="job-date__closing"> - August 14, 2026</span></time></span>
+        </div>
+      </article>
+      <article class="nextajax-item noo_job style-1 post-285000 type-noo_job status-publish hentry" data-url="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/285000/">
+        <h3 class="loop-item-title"><a href="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/285000/">Office Engineer</a></h3>
+        <div class="loop-item-wrap list">
+          <span class="job-company"><a href="#"><span>4B Trading PLC</span></a></span>
+          <span class="job-type"><a href="/job-type/contract/"><i class="fa fa-bookmark"></i><span>Contract</span></a></span>
+          <span class="job-location" itemprop="jobLocation"><a href="/job-location/bahir-dar/"><em>Bahir Dar</em></a></span>
+          <span class="job-date"><time class="entry-date" datetime="2026-08-04T06:00:53+03:00"><span class="job-date__posted">August 4, 2026</span><span class="job-date__closing"> - August 12, 2026</span></time></span>
+        </div>
+      </article>
+    </div>
+  </div>
+</body></html>
+"""
+
+# The raw card dict ReporterJobsScraper.parse() produces for the FIRST card
+# above. published_at comes from the exact <time datetime> attribute.
+REPORTER_SAMPLE = {
+    "post_id": "284574",
+    "title": "Property Administrator",
+    "url": "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/",
+    "company": "LANCET GENERAL HOSPITAL",
+    "job_type_text": "Full Time",
+    "job_type": "full_time",
+    "location": "Addis Ababa",
+    "posted_text": "August 7, 2026",
+    "published_at": "2026-08-07T06:00:53+03:00",
+    "deadline_text": "August 14, 2026",
+    "deadline": "2026-08-14T00:00:00+03:00",
+}
+
+REPORTER_SAMPLE_PATHS = [
+    "company",
+    "deadline",
+    "deadline_text",
+    "job_type",
+    "job_type_text",
+    "location",
+    "post_id",
+    "posted_text",
+    "published_at",
     "title",
     "url",
 ]
@@ -1046,6 +1116,278 @@ class GeezJobsScraperTests(TestCase):
         self.assertIsInstance(scraper, HtmlScraper)
 
 
+class ReporterJobsScraperTests(TestCase):
+    """The Ethiopian Reporter Jobs HTML scraper: card parsing, exact dates, today filter, detail row."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="reporterjobs",
+            name="Ethiopian Reporter Jobs",
+            base_url="https://www.ethiopianreporterjobs.com",
+            endpoint="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/",
+            scraper_type="html",
+            only_today=True,
+            field_mapping={
+                "external_id": "post_id",
+                "title": "title",
+                "company": "company",
+                "location": "location",
+                "job_type": {"path": "job_type", "transforms": ["upper"]},
+                "url": "url",
+                "published_at": {"path": "published_at", "transforms": ["parse_datetime"]},
+                "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+            },
+            pagination={
+                "page_size": 10,
+                "page_1_based": True,
+                "page_style": "path",
+                "date_filter": {"field": "published_at"},
+                "max_pages": 100,
+            },
+        )
+        self.scraper = ReporterJobsScraper(self.source)
+
+    def test_extract_structure_matches_reporterjobs_sample(self):
+        self.assertEqual(extract_structure(REPORTER_SAMPLE), REPORTER_SAMPLE_PATHS)
+
+    def test_reporterjobs_snapshot_exists_and_contains_core_structure(self):
+        snapshot = load_structure("reporterjobs")
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["source"], "reporterjobs")
+        missing = set(REPORTER_SAMPLE_PATHS) - set(snapshot["fields"])
+        self.assertFalse(missing, f"Reporter Jobs snapshot is missing core fields: {sorted(missing)}")
+
+    def test_page_url_uses_wordpress_path_pagination(self):
+        # Page 1 is the bare /jobs-in-ethiopia/ URL; /page/N/ starts at page 2.
+        self.assertEqual(
+            self.scraper._page_url(0),
+            "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/",
+        )
+        self.assertEqual(
+            self.scraper._page_url(1),
+            "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/page/2/",
+        )
+        self.assertEqual(
+            self.scraper._page_url(6),
+            "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/page/7/",
+        )
+
+    def test_parse_extracts_cards_from_html(self):
+        from bs4 import BeautifulSoup
+
+        raw = BeautifulSoup(REPORTER_SAMPLE_HTML, "html.parser")
+        items = self.scraper.parse(raw)
+        self.assertEqual(len(items), 2)
+
+        first = items[0]
+        self.assertEqual(first["post_id"], "284574")
+        self.assertEqual(first["title"], "Property Administrator")
+        self.assertEqual(
+            first["url"],
+            "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/",
+        )
+        self.assertEqual(first["company"], "LANCET GENERAL HOSPITAL")
+        self.assertEqual(first["job_type_text"], "Full Time")
+        self.assertEqual(first["job_type"], "full_time")
+        self.assertEqual(first["location"], "Addis Ababa")
+        self.assertEqual(first["posted_text"], "August 7, 2026")
+        self.assertEqual(first["deadline_text"], "August 14, 2026")
+        # Exact timestamp from the <time datetime> attribute.
+        self.assertEqual(
+            first["published_at"], "2026-08-07T06:00:53+03:00"
+        )
+        # Parsed deadline = local midnight; build the expected offset from the
+        # active timezone so the assertion survives a TIME_ZONE change.
+        self.assertEqual(
+            first["deadline"],
+            timezone.make_aware(datetime(2026, 8, 14)).isoformat(),
+        )
+
+        second = items[1]
+        self.assertEqual(second["title"], "Office Engineer")
+        self.assertEqual(second["job_type"], "contract")
+        self.assertEqual(second["location"], "Bahir Dar")
+        self.assertEqual(
+            second["deadline"],
+            timezone.make_aware(datetime(2026, 8, 12)).isoformat(),
+        )
+
+    def test_shared_month_day_year_parser(self):
+        from core.scrapers.html import parse_month_day_year
+
+        # Leading dash (the card's closing span) and 'Deadline:' prefixes are
+        # both skipped; full and abbreviated month names both work.
+        self.assertEqual(
+            parse_month_day_year("- August 12, 2026"),
+            timezone.make_aware(datetime(2026, 8, 12)),
+        )
+        self.assertEqual(
+            parse_month_day_year("Deadline: Sep 7, 2026"),
+            timezone.make_aware(datetime(2026, 9, 7)),
+        )
+        self.assertIsNone(parse_month_day_year("nope"))
+        self.assertIsNone(parse_month_day_year(""))
+
+    def test_normalize_maps_card_fields(self):
+        item = self.scraper.normalize(REPORTER_SAMPLE)
+        self.assertEqual(item["external_id"], "284574")
+        self.assertEqual(item["title"], "Property Administrator")
+        self.assertEqual(item["company"], "LANCET GENERAL HOSPITAL")
+        self.assertEqual(item["location"], "Addis Ababa")
+        # The site's normalized type value maps to the shared enum.
+        self.assertEqual(item["job_type"], "FULL_TIME")
+        self.assertIsNotNone(item["published_at"])
+        self.assertIsNotNone(item["deadline"])
+
+    def test_parse_raises_on_challenge_page(self):
+        from bs4 import BeautifulSoup
+
+        # No cards AND no archive container -> Cloudflare challenge / error page.
+        blocked = BeautifulSoup(
+            '<html><body><title>Attention Required! | Cloudflare</title>'
+            '<div class="cf-error-details"></div></body></html>',
+            "html.parser",
+        )
+        with self.assertRaises(ScrapeError) as ctx:
+            self.scraper.parse(blocked)
+        self.assertIn("Cloudflare", str(ctx.exception))
+
+    def test_parse_returns_empty_on_genuine_empty_page(self):
+        from bs4 import BeautifulSoup
+
+        # Real listings page (archive container present) but zero cards: legit
+        # empty (e.g. WordPress redirected the deep page to /expired).
+        empty = BeautifulSoup(
+            '<html><body><div class="jobs posts-loop"></div></body></html>',
+            "html.parser",
+        )
+        self.assertEqual(self.scraper.parse(empty), [])
+
+    def test_parse_returns_empty_on_expired_end_of_feed_page(self):
+        from bs4 import BeautifulSoup
+
+        # Deep archive pages redirect to /expired: site framing (header) is
+        # intact but there are no cards and no archive container. That must be
+        # a clean end-of-feed (so a backfill sweep stops), NOT a ScrapeError.
+        expired = BeautifulSoup(
+            '<html><body><header><nav><a href="/">Home</a></nav></header>'
+            '<h1>Expired</h1><p>These jobs have expired.</p></body></html>',
+            "html.parser",
+        )
+        self.assertEqual(self.scraper.parse(expired), [])
+
+    def test_normalize_job_type_maps_known_and_drops_unknown(self):
+        from core.scrapers.reporterjobs import _normalize_job_type
+
+        # Known chips map to the shared JobType values.
+        self.assertEqual(_normalize_job_type("Full Time"), "full_time")
+        self.assertEqual(_normalize_job_type("Contract"), "contract")
+        self.assertEqual(_normalize_job_type("Part Time"), "part_time")
+        self.assertEqual(_normalize_job_type("Internship"), "internship")
+        # Parenthetical qualifiers are stripped before mapping.
+        self.assertEqual(_normalize_job_type("Full Time (Remote)"), "full_time")
+        # Unknown phrases map to '' so the master enum never gets polluted
+        # (the raw text is still kept on ReporterJob.job_type_text).
+        self.assertEqual(_normalize_job_type("Unicorn Position"), "")
+        self.assertEqual(_normalize_job_type(""), "")
+
+    @staticmethod
+    def _item(days_ago=0):
+        """A normalized Reporter Jobs item published ``days_ago`` days from now."""
+        return {
+            "external_id": "post-%d" % days_ago,
+            "title": "Job %d" % days_ago,
+            "location": "Addis Ababa",
+            "job_type": "FULL_TIME",
+            "published_at": timezone.now() - timedelta(days=days_ago),
+            "raw_data": {"post_id": "post-%d" % days_ago},
+        }
+
+    def test_keep_item_drops_pre_today(self):
+        self.assertTrue(self.scraper._keep_item(self._item(0)))
+        self.assertFalse(self.scraper._keep_item(self._item(1)))
+        self.assertFalse(self.scraper._keep_item(self._item(3)))
+
+    def test_past_today_boundary(self):
+        # A page whose kept items are all pre-today marks the boundary.
+        self.assertTrue(
+            self.scraper._past_today_boundary(2, [self._item(1), self._item(3)])
+        )
+        # A page with today's items (even mixed) does not.
+        self.assertFalse(
+            self.scraper._past_today_boundary(0, [self._item(0), self._item(1)])
+        )
+
+    def test_save_detail_persists_everything_and_links_master(self):
+        item = self.scraper.normalize(REPORTER_SAMPLE)
+        item["raw_data"] = REPORTER_SAMPLE
+        master_item = ScrapedItem.objects.create(
+            source=self.source,
+            external_id=item["external_id"],
+            title=item["title"],
+            job_number=1,
+            numbered_on=timezone.localdate(),
+        )
+        self.scraper._save_detail(item, master_item)
+        detail = ReporterJob.objects.get(external_id=item["external_id"])
+        self.assertEqual(detail.company, "LANCET GENERAL HOSPITAL")
+        self.assertEqual(detail.location, "Addis Ababa")
+        self.assertEqual(detail.job_type_text, "Full Time")
+        self.assertEqual(detail.job_type, "full_time")
+        self.assertEqual(detail.job_type_display, "Full Time")
+        self.assertEqual(detail.posted_text, "August 7, 2026")
+        self.assertEqual(detail.deadline_text, "August 14, 2026")
+        self.assertIsNotNone(detail.published_at)
+        self.assertIsNotNone(detail.deadline)
+        self.assertEqual(detail.job_number, 1)
+        master_item.refresh_from_db()
+        self.assertEqual(master_item.reporter_job_id, detail.pk)
+
+    def test_generic_record_detail_log_writes_reporterjobs_site_log(self):
+        run = make_run(api_hits=2, found=3)
+        log_id = self.scraper.record_detail_log(run, timezone.localdate())
+        self.assertIsNotNone(log_id)
+        site_log = ReporterScrapeLog.objects.get()
+        self.assertEqual(len(site_log.scraped_log), 1)
+        self.assertEqual(site_log.api_hits, 2)
+        # The master bucket references the right table.
+        master = self.scraper._update_master_day_log(run, timezone.localdate(), log_id)
+        bucket = master.website("reporterjobs")
+        self.assertEqual(bucket["table"], "ReporterScrapeLog")
+        self.assertEqual(bucket["log_id"], log_id)
+        self.assertEqual(bucket["status"], "success")
+
+    def test_sweep_stops_at_today_boundary(self):
+        # Page 0 carries today's listing (pre-today items are already dropped
+        # inside _page_items by _keep_item); page 1 is entirely pre-today, so
+        # its kept list is empty and the sweep must stop there — storing only
+        # the single today item and its detail row, and logging the run.
+        today_item = self.scraper.normalize(REPORTER_SAMPLE)
+        today_item["external_id"] = "today-1"
+        today_item["raw_data"] = {**REPORTER_SAMPLE, "post_id": "today-1"}
+        pages = [
+            ([today_item], 200),  # page 0: today's listing
+            ([], 200),            # page 1: nothing kept -> stop
+        ]
+        with mock.patch.object(self.scraper, "_page_items", side_effect=pages):
+            self.scraper.scrape_many()
+
+        self.assertTrue(ScrapedItem.objects.filter(external_id="today-1").exists())
+        self.assertEqual(ReporterJob.objects.count(), 1)
+        self.assertEqual(ReporterJob.objects.get().job_number, 1)
+        # The run landed in the per-site day log for the master rollup.
+        site_log = ReporterScrapeLog.objects.get(source=self.source)
+        self.assertEqual(site_log.run_count, 1)
+        self.assertEqual(site_log.items_inserted, 1)
+
+    def test_factory_dispatches_reporterjobs_by_slug(self):
+        from core.scrapers import ScraperFactory
+
+        scraper = ScraperFactory.for_source(self.source)
+        self.assertIsInstance(scraper, ReporterJobsScraper)
+        self.assertIsInstance(scraper, HtmlScraper)
+
+
 class ApiIssueTests(TestCase):
     """Every API response of the day must be visible; non-200s must be caught."""
 
@@ -1263,3 +1605,106 @@ class DayLogTests(TestCase):
         scraper.record_detail_log(make_run(found=3), self.today)
         self.assertEqual(scraper.last_run()["items_found"], 3)
         self.assertIsNone(scraper.last_run(self.today + timedelta(days=1)))
+
+
+class ScrapeAllCommandTests(TestCase):
+    """The one-command scrape_all: calls scrape_source for every active source."""
+
+    def test_scrape_all_calls_each_active_source_and_continues_on_failure(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        Source.objects.create(
+            slug="ethiojobs", name="EthioJobs", endpoint="https://example.com/2",
+            is_active=False,  # inactive sources are skipped
+        )
+        Source.objects.create(
+            slug="geezjobs", name="GeezJobs", endpoint="https://example.com/3",
+            is_active=True,
+        )
+
+        calls: list[tuple] = []
+
+        def fake_call(command, *args, **kwargs):
+            calls.append((command, args[0]))
+            if args[0] == "geezjobs":
+                raise RuntimeError("boom")
+
+        out = io.StringIO()
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", side_effect=fake_call
+        ):
+            with self.assertRaises(SystemExit):
+                call_command("scrape_all", stdout=out)
+
+        # Every active source ran in order; the inactive one was skipped, and
+        # one failure did not stop the others.
+        self.assertEqual(
+            calls,
+            [("scrape_source", "afriwork"), ("scrape_source", "geezjobs")],
+        )
+        text = out.getvalue()
+        self.assertIn("1 source(s) failed", text)
+        self.assertIn("geezjobs: failed: boom", text)
+
+    def test_scrape_all_passes_options_and_slug_filter_through(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        Source.objects.create(
+            slug="geezjobs", name="GeezJobs", endpoint="https://example.com/3",
+            is_active=True,
+        )
+
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", return_value=None
+        ) as fake_call:
+            call_command(
+                "scrape_all",
+                no_today=True,
+                page=2,
+                slugs=["afriwork"],
+                stdout=io.StringIO(),
+            )
+
+        # --slugs filtered to afriwork; --no-today and --page passed through.
+        fake_call.assert_called_once_with(
+            "scrape_source", "afriwork", no_today=True, page=2
+        )
+
+    def test_scrape_all_warns_without_active_sources(self):
+        out = io.StringIO()
+        call_command("scrape_all", stdout=out)
+        self.assertIn("No active sources", out.getvalue())
+
+    def test_scrape_all_rejects_unknown_slugs(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        out = io.StringIO()
+        with self.assertRaises(CommandError):
+            call_command("scrape_all", slugs=["afriwork", "nope"], stdout=out)
+
+    def test_scrape_all_skips_requested_inactive_sources_with_warning(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        Source.objects.create(
+            slug="ethiojobs", name="EthioJobs", endpoint="https://example.com/2",
+            is_active=False,
+        )
+
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", return_value=None
+        ) as fake_call:
+            out = io.StringIO()
+            call_command("scrape_all", slugs=["afriwork", "ethiojobs"], stdout=out)
+
+        # The active source was scraped; the inactive one was skipped with a
+        # warning (and its slug never reached scrape_source).
+        fake_call.assert_called_once_with("scrape_source", "afriwork")
+        self.assertIn("inactive", out.getvalue())

@@ -24,6 +24,8 @@ from core.models import (
     GeezScrapeLog,
     HaHuJob,
     HaHuScrapeLog,
+    ReporterJob,
+    ReporterScrapeLog,
     ScrapeLog,
     ScrapedItem,
 )
@@ -40,6 +42,8 @@ DATA_MODELS = [
     HaHuScrapeLog,
     GeezJob,
     GeezScrapeLog,
+    ReporterJob,
+    ReporterScrapeLog,
 ]
 
 

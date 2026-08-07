@@ -69,11 +69,13 @@ core/
   management/commands/
     seed_sources.py                create/update Source rows (idempotent)
     scrape_source.py               run one source now
+    scrape_all.py                  run every active source (one command)
     capture_structure.py           snapshot a source's API structure
     check_structure.py             live-diff a source against its snapshot
     log_report.py                  day report (totals + any issues)
     daily_check.py                 one command: tests + structure + report
     clear_data.py                  wipe all data except Source (prod-safe)
+COMMANDS.md                        command reference (all commands in one place)
 ```
 
 ---
@@ -301,13 +303,25 @@ Everything config-driven. The base also provides:
 - **`HtmlScraper` + `GeezJobsScraper`** (GeezJobs, server-side HTML) — no JSON
   API: the listings are baked into `.opportunity-card` divs on /search-jobs.
   `HtmlScraper` is the generic GET/HTML base (page 1 = bare URL, `?page=N`
-  from page 2; client-side today filter driven by relative "Posted: X ago"
-  chips). `GeezJobsScraper` adds the card parsing, estimates `published_at`
-  from the relative chip, splits employment into time + type, and treats a
-  page with no cards AND no search UI as a bot-check page (the site embeds a
-  `.trap-field` honeypot that is never submitted — GETs only) by raising
-  instead of silently storing nothing. Registered per-slug in
-  `ScraperFactory` like HaHuJobs.
+  from page 2 — or `page_style: "path"` for WordPress `/page/N/` URLs;
+  client-side today filter). `GeezJobsScraper` adds the card parsing,
+  estimates `published_at` from the relative "Posted: X ago" chip, splits
+  employment into time + type, and treats a page with no cards AND no search
+  UI as a bot-check page (the site embeds a `.trap-field` honeypot that is
+  never submitted — GETs only) by raising instead of silently storing
+  nothing. Registered per-slug in `ScraperFactory` like HaHuJobs.
+- **`ReporterJobsScraper`** (Ethiopian Reporter Jobs, second HTML site —
+  WordPress / Noo Job Board theme) — subclasses `HtmlScraper`; path-style
+  `/page/N/` pagination via `page_style: "path"`. The `article.noo_job`
+  cards carry EXACT timestamps (`<time datetime="...">`), so `published_at`
+  needs no estimation, and the closing-date span is the deadline. The
+  newspaper posts in batches, so the strict today-only run truthfully stores
+  nothing on non-posting days; a pinned "featured" widget repeats the same
+  jobs on every page (dedup by WordPress post id). Behind Cloudflare — a
+  challenge page (no cards, no `div.jobs.posts-loop` archive) raises
+  `ScrapeError` instead of recording an empty feed. Registered per-slug in
+  `ScraperFactory` (`"reporterjobs"` → `ReporterJobsScraper`, detail rows
+  `ReporterJob` + `ReporterScrapeLog`).
 
 Note on client-side filters: `_keep_item`/`_past_today_boundary` are designed
 for DATE-based filtering (an all-old page legitimately ends the sweep).
@@ -364,6 +378,7 @@ that the snapshot still contains the core fields the scraper relies on.
 |---|---|
 | `seed_sources` | create/update all Source rows |
 | `scrape_source <slug>` | run one source now (`--page N`, `--no-today`) |
+| `scrape_all` | run EVERY active source with one command (see `COMMANDS.md`) |
 | `log_report [--day D] [--all]` | day totals + per-website numbers + any non-200 / failed runs |
 | `check_structure [slug]` | live structure diff vs snapshot |
 | `capture_structure <slug>` | (re)write the structure snapshot |

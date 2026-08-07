@@ -1,0 +1,17 @@
+{
+  "source": "reporterjobs",
+  "captured_at": "2026-08-07T13:05:15+00:00",
+  "fields": [
+    "company",
+    "deadline",
+    "deadline_text",
+    "job_type",
+    "job_type_text",
+    "location",
+    "post_id",
+    "posted_text",
+    "published_at",
+    "title",
+    "url"
+  ]
+}

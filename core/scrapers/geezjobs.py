@@ -41,27 +41,9 @@ from django.utils import timezone
 from core.models import GeezJob, GeezScrapeLog, ScrapedItem
 
 from .base import ScrapeError
-from .html import HtmlScraper
+from .html import HtmlScraper, parse_month_day_year
 
 # Card text parsers (all chips follow the same row shape).
-#   "Deadline: September 7, 2026"
-_DEADLINE_RE = re.compile(r"Deadline:\s*([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})")
-# Full and abbreviated month names (the feed currently shows full names; the
-# abbreviations future-proof the parser against format tweaks).
-_MONTHS = {
-    "January": 1, "Jan": 1,
-    "February": 2, "Feb": 2,
-    "March": 3, "Mar": 3,
-    "April": 4, "Apr": 4,
-    "May": 5,
-    "June": 6, "Jun": 6,
-    "July": 7, "Jul": 7,
-    "August": 8, "Aug": 8,
-    "September": 9, "Sep": 9, "Sept": 9,
-    "October": 10, "Oct": 10,
-    "November": 11, "Nov": 11,
-    "December": 12, "Dec": 12,
-}
 #   "Posted: 3 min ago" | "Posted: 1 hours ago" | "Posted: 2 days ago"
 _POSTED_RE = re.compile(r"Posted:\s*(\d+)\s*(min|hour|day|week)s?\s*ago", re.IGNORECASE)
 _POSTED_UNIT_SECONDS = {"min": 60, "hour": 3600, "day": 86400, "week": 604800}
@@ -76,19 +58,12 @@ _JOB_TIME_VALUES = {"full_time", "part_time"}
 
 
 def _parse_deadline(text: str) -> datetime | None:
-    """'Deadline: September 7, 2026' -> aware datetime at local midnight."""
-    if not text:
-        return None
-    match = _DEADLINE_RE.search(text)
-    if not match:
-        return None
-    month = _MONTHS.get(match.group(1).capitalize())
-    if month is None:
-        return None
-    try:
-        return timezone.make_aware(datetime(int(match.group(3)), month, int(match.group(2))))
-    except ValueError:
-        return None
+    """'Deadline: September 7, 2026' -> aware datetime at local midnight.
+
+    Reuses the shared HTML date-text parser (handles full + abbreviated month
+    names; the 'Deadline:' prefix is simply skipped by its search).
+    """
+    return parse_month_day_year(text)
 
 
 def _parse_posted(text: str) -> datetime | None:

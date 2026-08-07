@@ -278,6 +278,54 @@ GEEZJOBS_PAGINATION = {
     "timeout": 30.0,
 }
 
+# Ethiopian Reporter Jobs — WordPress (Noo Job Board theme) server-side HTML:
+# https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/ (path-paginated
+# /page/N/, ~10 archive cards + a pinned "featured" widget per page, newest
+# first). There is no JSON API; the ReporterJobsScraper
+# (core/scrapers/reporterjobs.py) extracts the article.noo_job cards. Cards
+# carry EXACT timestamps (<time datetime=...>) so published_at is precise.
+# The newspaper posts in BATCHES (the current feed is one big August 5
+# batch), so the strict today-only filter truthfully stores nothing on
+# non-posting days and captures each new batch on posting days. The site is
+# behind Cloudflare — a challenge page (no cards, no archive container)
+# raises ScrapeError instead of silently recording an empty feed.
+REPORTER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    ),
+}
+
+REPORTER_FIELD_MAPPING = {
+    # Dedup key: the stable WordPress post id (last URL segment, e.g. 284574).
+    "external_id": "post_id",
+    "title": "title",
+    "company": "company",
+    "location": "location",
+    # The card's single type phrase is normalized in the scraper
+    # ("Full Time" -> "full_time"); uppercased here to the shared enum.
+    "job_type": {"path": "job_type", "transforms": ["upper"]},
+    "url": "url",
+    "published_at": {"path": "published_at", "transforms": ["parse_datetime"]},
+    "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+}
+
+REPORTER_PAGINATION = {
+    "page_size": 10,
+    # WordPress path pagination: page 1 is the bare /jobs-in-ethiopia/ URL,
+    # page 2 is /jobs-in-ethiopia/page/2/ (page_style="path" in HtmlScraper).
+    "page_1_based": True,
+    "page_style": "path",
+    # No from/to vars: the HTML feed can't be filtered by date server-side, so
+    # the HtmlScraper drops pre-today items and ends the sweep once a page has
+    # no items posted today (exact timestamps from the <time datetime> attrs).
+    "date_filter": {"field": "published_at"},
+    "max_pages": 100,
+    "timeout": 30.0,
+}
+
 
 class Command(BaseCommand):
     help = "Create or update the built-in source configurations (idempotent)."
@@ -357,4 +405,23 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {geezjobs}")
+        )
+
+        reporterjobs_defaults = {
+            "name": "Ethiopian Reporter Jobs",
+            "base_url": "https://www.ethiopianreporterjobs.com",
+            "scraper_type": ScraperType.HTML,
+            "endpoint": "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/",
+            "headers": REPORTER_HEADERS,
+            "query": "",
+            "field_mapping": REPORTER_FIELD_MAPPING,
+            "pagination": REPORTER_PAGINATION,
+            "scrape_interval_hours": 24,
+            "is_active": True,
+        }
+        reporterjobs, created = Source.objects.update_or_create(
+            slug="reporterjobs", defaults=reporterjobs_defaults
+        )
+        self.stdout.write(
+            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {reporterjobs}")
         )

@@ -21,6 +21,7 @@ detail row. The generic ``HtmlScraper`` cannot be scraped directly — its
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 import httpx
@@ -31,6 +32,45 @@ from .base import BaseScraper, transform_parse_datetime
 
 DEFAULT_TIMEOUT = 30.0
 
+# Full and abbreviated month names for the shared date-text parser below.
+# (GeezJobs shows 'September 7, 2026'; Ethiopian Reporter Jobs shows
+# 'August 5, 2026' — same shape, different sites.)
+MONTHS = {
+    "January": 1, "Jan": 1,
+    "February": 2, "Feb": 2,
+    "March": 3, "Mar": 3,
+    "April": 4, "Apr": 4,
+    "May": 5,
+    "June": 6, "Jun": 6,
+    "July": 7, "Jul": 7,
+    "August": 8, "Aug": 8,
+    "September": 9, "Sep": 9, "Sept": 9,
+    "October": 10, "Oct": 10,
+    "November": 11, "Nov": 11,
+    "December": 12, "Dec": 12,
+}
+
+
+def parse_month_day_year(text: str) -> datetime | None:
+    """Extract a 'Month D, YYYY' date anywhere in the text -> aware local midnight.
+
+    Handles full and abbreviated month names ('September 7, 2026' / 'Aug 7,
+    2026'); returns None when no recognizable date is present. Used for the
+    absolute deadline/posted dates both HTML sites show on their cards.
+    """
+    if not text:
+        return None
+    match = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", text)
+    if not match:
+        return None
+    month = MONTHS.get(match.group(1).capitalize())
+    if month is None:
+        return None
+    try:
+        return timezone.make_aware(datetime(int(match.group(3)), month, int(match.group(2))))
+    except ValueError:
+        return None
+
 
 class HtmlScraper(BaseScraper):
     """GET/HTML scraper for server-side rendered listing pages."""
@@ -39,10 +79,22 @@ class HtmlScraper(BaseScraper):
         """Absolute URL for the given 0-based page index.
 
         Page 1 stays the bare endpoint (the site's own pagination omits the
-        param on page 1); ``page_1_based`` sources get ``?page=N`` from page 2.
+        param on page 1) in both styles:
+
+        * query style (default): ``?page=N`` from page 2 when ``page_1_based``
+          is set (GeezJobs: ``/search-jobs`` -> ``/search-jobs?page=2``).
+        * path style (WordPress): ``page_style: "path"`` builds
+          ``/page/N/`` URLs from page 2 (Ethiopian Reporter Jobs:
+          ``/jobs-in-ethiopia/`` -> ``/jobs-in-ethiopia/page/2/``).
         """
         pagination = self.source.pagination or {}
         key = pagination.get("page_key", "page")
+        if pagination.get("page_style") == "path":
+            number = page + 1
+            if number <= 1:
+                return self.source.endpoint
+            base = self.source.endpoint.rstrip("/")
+            return f"{base}/page/{number}/"
         if pagination.get("page_1_based"):
             number = page + 1
             return self.source.endpoint if number <= 1 else f"{self.source.endpoint}?{key}={number}"

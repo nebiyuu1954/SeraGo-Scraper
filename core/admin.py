@@ -13,6 +13,8 @@ from .models import (
     GeezScrapeLog,
     HaHuJob,
     HaHuScrapeLog,
+    ReporterJob,
+    ReporterScrapeLog,
     ScrapeLog,
     ScrapedItem,
     Source,
@@ -59,6 +61,7 @@ class ScrapedItemAdmin(admin.ModelAdmin):
         "ethiojobs_job",
         "hahujobs_job",
         "geezjobs_job",
+        "reporter_job",
         "content_hash",
         "first_seen_at",
         "last_seen_at",
@@ -403,4 +406,69 @@ class GeezJobAdmin(admin.ModelAdmin):
     )
     list_filter = ("job_time", "job_type", "numbered_on")
     search_fields = ("title", "company", "location", "slug", "external_id")
+    readonly_fields = ("id", "job_number", "numbered_on", "created_at", "updated_at")
+
+
+@admin.register(ReporterScrapeLog)
+class ReporterScrapeLogAdmin(admin.ModelAdmin):
+    """Per-website log — one row per (site, day) with every run that day."""
+
+    ordering = ("-day",)
+    list_display = (
+        "day",
+        "source",
+        "status_colored",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "updated_at",
+    )
+    list_filter = ("day", "source", "status")
+    date_hierarchy = "day"
+    readonly_fields = (
+        "id",
+        "source",
+        "day",
+        "status_colored",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "scraped_log_pretty",
+        "created_at",
+        "updated_at",
+    )
+    list_select_related = ("source",)
+
+    @admin.display(description="Status")
+    def status_colored(self, obj):
+        colors = {"success": "#28a745", "partial": "#ffc107", "failed": "#dc3545"}
+        color = colors.get(obj.status, "#6c757d")
+        return format_html('<span style="color: {}; font-weight: bold;">{}</span>', color, obj.status)
+
+    @admin.display(description="scraped_log (JSON)")
+    def scraped_log_pretty(self, obj):
+        return format_html("<pre>{}</pre>", json.dumps(obj.scraped_log, indent=2, default=str))
+
+
+@admin.register(ReporterJob)
+class ReporterJobAdmin(admin.ModelAdmin):
+    ordering = ("-numbered_on", "job_number")
+    list_display = (
+        "job_number_display",
+        "title",
+        "company",
+        "location",
+        "job_type_display",
+        "deadline",
+        "published_at",
+        "numbered_on",
+    )
+    list_filter = ("job_type", "numbered_on")
+    search_fields = ("title", "company", "location", "external_id")
     readonly_fields = ("id", "job_number", "numbered_on", "created_at", "updated_at")
