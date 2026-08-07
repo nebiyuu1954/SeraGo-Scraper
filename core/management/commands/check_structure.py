@@ -8,6 +8,7 @@ Fetches one page from the live API and diffs its field paths against the
 stored snapshot. Any added/removed field is reported and the command exits
 non-zero, so a silent API change becomes visible immediately.
 """
+import httpx
 from django.core.management.base import BaseCommand, CommandError
 
 from core.models import Source
@@ -38,6 +39,7 @@ class Command(BaseCommand):
 
         checked = 0
         changed = 0
+        skipped = 0
         for source in sources:
             stored = load_structure(source.slug)
             if stored is None:
@@ -50,7 +52,23 @@ class Command(BaseCommand):
 
             checked += 1
             scraper = ScraperFactory.for_source(source)
-            items = scraper.parse(scraper.fetch(0))
+            try:
+                items = scraper.parse(scraper.fetch(0))
+            except httpx.HTTPStatusError as exc:
+                # Auth-required sources (e.g. EthioJobs JWT) can't be checked
+                # when the token isn't configured — flag it and fail the run
+                # so a cron'd daily_check knows the site was NOT verified.
+                if exc.response.status_code in (401, 403):
+                    skipped += 1
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"{source.slug}: skipped - API auth not configured "
+                            f"(HTTP {exc.response.status_code}). Set the token "
+                            f"(e.g. ETHIOJOBS_TOKEN) and re-run."
+                        )
+                    )
+                    continue
+                raise
             if not items:
                 self.stdout.write(
                     self.style.ERROR(f"{source.slug}: live API returned no items.")
@@ -78,6 +96,11 @@ class Command(BaseCommand):
         if changed:
             raise CommandError(
                 f"{changed} of {checked} checked source(s) have a changed structure."
+            )
+        if skipped:
+            raise CommandError(
+                f"{skipped} of {checked} source(s) could NOT be verified "
+                f"(API auth not configured). Fix the token and re-run."
             )
         self.stdout.write(
             self.style.SUCCESS(

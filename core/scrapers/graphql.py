@@ -10,7 +10,7 @@ returns today's listings.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta
 
 import httpx
 from django.utils import timezone
@@ -25,6 +25,8 @@ DEFAULT_TIMEOUT = 30.0
 
 class GraphQLScraper(BaseScraper):
     """Paged POST/JSON scraper for Hasura GraphQL endpoints."""
+
+    site_log_model = AfriworkScrapeLog
 
     def _today_range(self) -> tuple[datetime, datetime]:
         """Today's local-day window as aware datetimes: [00:00, tomorrow 00:00)."""
@@ -139,31 +141,6 @@ class GraphQLScraper(BaseScraper):
         )
         if instance.afriwork_job_id != afriwork.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(afriwork_job=afriwork)
-
-    def record_detail_log(self, run: dict, day: date) -> str | None:
-        """Append this run to the AfriworkScrapeLog day log; return its pk.
-
-        ONE record per (source, day): each run appends its summary to
-        ``scraped_log`` and bumps the day totals (api_hits, items_*, worst
-        status). The returned pk is stored on the master log's ``websites``
-        bucket as ``log_id`` so the master references this site log.
-        Failures are handled by the caller (BaseScraper._close).
-        """
-        day_log, _ = AfriworkScrapeLog.objects.get_or_create(
-            source=self.source,
-            day=day,
-        )
-        entry = self._run_summary(run)
-        day_log.scraped_log.append(entry)
-        day_log.run_count += 1
-        day_log.api_hits += run.get("api_hits", 0)
-        day_log.items_found += run.get("items_found", 0)
-        day_log.items_inserted += run.get("items_inserted", 0)
-        day_log.items_updated += run.get("items_updated", 0)
-        day_log.items_skipped += run.get("items_skipped", 0)
-        day_log.status = self._worst_status(day_log.status, run.get("status"))
-        day_log.save()
-        return str(day_log.pk)
 
     def parse(self, raw: dict) -> list[dict]:
         # Hasura reports GraphQL errors in the body with HTTP 200 — surface them.

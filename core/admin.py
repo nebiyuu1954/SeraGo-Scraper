@@ -7,6 +7,8 @@ from django.utils.html import format_html, format_html_join
 from .models import (
     AfriworkJob,
     AfriworkScrapeLog,
+    EthioJobsJob,
+    EthioJobsScrapeLog,
     ScrapeLog,
     ScrapedItem,
     Source,
@@ -50,6 +52,7 @@ class ScrapedItemAdmin(admin.ModelAdmin):
         "job_number",
         "numbered_on",
         "afriwork_job",
+        "ethiojobs_job",
         "content_hash",
         "first_seen_at",
         "last_seen_at",
@@ -181,3 +184,79 @@ class AfriworkJobAdmin(admin.ModelAdmin):
     list_filter = ("job_type", "job_site", "experience_level", "numbered_on")
     search_fields = ("title", "location", "entity_name", "external_id")
     readonly_fields = ("id", "job_number", "numbered_on", "created_at", "updated_at")
+
+
+@admin.register(EthioJobsScrapeLog)
+class EthioJobsScrapeLogAdmin(admin.ModelAdmin):
+    """Per-website log — one row per (site, day) with every run that day."""
+
+    ordering = ("-day",)
+    list_display = (
+        "day",
+        "source",
+        "status_colored",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "updated_at",
+    )
+    list_filter = ("day", "source", "status")
+    date_hierarchy = "day"
+    readonly_fields = (
+        "id",
+        "source",
+        "day",
+        "status_colored",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "scraped_log_pretty",
+        "created_at",
+        "updated_at",
+    )
+    list_select_related = ("source",)
+
+    @admin.display(description="Status")
+    def status_colored(self, obj):
+        colors = {"success": "#28a745", "partial": "#ffc107", "failed": "#dc3545"}
+        color = colors.get(obj.status, "#6c757d")
+        return format_html('<span style="color: {}; font-weight: bold;">{}</span>', color, obj.status)
+
+    @admin.display(description="scraped_log (JSON)")
+    def scraped_log_pretty(self, obj):
+        return format_html("<pre>{}</pre>", json.dumps(obj.scraped_log, indent=2, default=str))
+
+
+@admin.register(EthioJobsJob)
+class EthioJobsJobAdmin(admin.ModelAdmin):
+    ordering = ("-numbered_on", "job_number")
+    list_display = (
+        "job_number_display",
+        "title",
+        "company_name",
+        "state",
+        "job_type_label",
+        "location_type",
+        "application_method",
+        "published_at",
+        "numbered_on",
+    )
+    list_filter = ("location_type", "application_method", "numbered_on")
+    search_fields = ("title", "state", "slug", "external_id")
+    readonly_fields = ("id", "job_number", "numbered_on", "created_at", "updated_at")
+
+    @admin.display(description="Company", ordering="company")
+    def company_name(self, obj):
+        company = obj.company or {}
+        return company.get("name") or "—"
+
+    @admin.display(description="Type")
+    def job_type_label(self, obj):
+        codes = {1: "FULL_TIME", 2: "PART_TIME", 3: "CONTRACT", 4: "INTERNSHIP", 5: "FREELANCE", 6: "TEMPORARY", 7: "REMOTE"}
+        return codes.get(obj.type, f"{obj.type} (other)" if obj.type else "—")

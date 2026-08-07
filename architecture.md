@@ -63,6 +63,7 @@ core/
   scrapers/
     base.py                        BaseScraper pipeline (fetch→parse→normalize→save)
     graphql.py                     GraphQLScraper (Afriwork's scraper)
+    rest.py                        RestJsonScraper (EthioJobs's scraper)
     factory.py                     ScraperFactory registry (scraper_type → class)
     __init__.py                    re-exports
   management/commands/
@@ -87,7 +88,7 @@ Everything about *how* to scrape a website lives here, not in code:
 | Field | Purpose |
 |---|---|
 | `name`, `slug` | display name + unique slug (used everywhere) |
-| `scraper_type` | `graphql` / `nextjs` / `html` / `playwright` |
+| `scraper_type` | `graphql` / `rest` / `nextjs` / `html` / `playwright` |
 | `endpoint` | the API URL to hit |
 | `headers` | JSON dict of HTTP headers |
 | `query` | the GraphQL query (or request params) |
@@ -120,7 +121,7 @@ per-website log.
 ## 4. Per-website models (the part you copy for each new site)
 
 ### 4.1 The item model — mirror the API
-Copy the shape of AfriworkJob. Store **every field the website's API sends**,
+Copy the shape of AfriworkJob (or EthioJobsJob). Store **every field the website's API sends**,
 plus `raw_payload` (the verbatim JSON) as a catch-all. It must include the same
 per-day numbering fields so the per-site row mirrors the master item:
 
@@ -215,7 +216,8 @@ dotted path into the raw item, optionally wrapped in a spec dict with
 ```
 
 Available transforms (extensible in `core/scrapers/base.py` → `TRANSFORMS`):
-`strip_html`, `clean_text`, `upper`, `parse_datetime`.
+`strip_html`, `clean_text`, `upper`, `parse_datetime`, `job_type_code`
+(numeric job-type code → shared JobType string, used by EthioJobs).
 
 ### `pagination` — how pages advance and how "today" is scoped
 ```json
@@ -231,11 +233,20 @@ Available transforms (extensible in `core/scrapers/base.py` → `TRANSFORMS`):
 ```
 
 - `page_size`, `results_path` are the essentials.
-- `date_filter` + `Source.only_today`: the scraper injects today's local-day
-  window into `$from`/`$to`. The **query** decides how the bounds apply —
-  Afriwork uses `_or: [{published_at: {_gte: $from, _lt: $to}},
-  {refreshed_at: {_gte: $from, _lt: $to}}]` so REPOSTED jobs are captured too.
-  If a website has no date filter, set `only_today=False` or extend the scraper.
+- `date_filter` + `Source.only_today` — **two modes**, chosen by the config:
+  - **Server-side (GraphQL):** `{"field": "published_at", "from_var": "from",
+    "to_var": "to"}` — the scraper injects today's local-day window into
+    `$from`/`$to`. The **query** decides how the bounds apply — Afriwork uses
+    `_or: [{published_at: {_gte: $from, _lt: $to}}, {refreshed_at: {_gte:
+    $from, _lt: $to}}]` so REPOSTED jobs are captured too.
+  - **Client-side (REST):** `{"field": "published_at"}` with **no**
+    from/to vars — the API cannot filter by date, so the `RestJsonScraper`
+    stops the sweep once a page contains no items from today (listings must
+    arrive newest-first) and drops pre-today items on mixed pages.
+  - REST pagination extras: `page_1_based: true` (EthioJobs numbers pages
+    from 1), `page_key`/`limit_key` to rename query params, `params` for
+    static query params.
+  - If a website has no date field at all, set `only_today=False`.
 
 ---
 
@@ -252,30 +263,51 @@ Everything config-driven. The base also provides:
   re-scrapes the sweep stops as soon as it reaches a record already stored for
   today, so only newly posted jobs are fetched. The safety check reads the
   per-site day log's worst status (a failed/partial run today ⇒ full sweep).
+- Client-side today hooks (used by `RestJsonScraper`): `_keep_item(item)`
+  drops pre-today items on mixed pages; `_past_today_boundary(page, items)`
+  ends the sweep once a page contains no items from today (defaults are
+  no-ops — server-side filtered scrapers don't need them).
+- **Generic day-log writing:** `record_detail_log()` is implemented ONCE in
+  the base class — a concrete scraper only sets a class attribute:
+  ```python
+  class EthioJobsScraper(RestJsonScraper):
+      site_log_model = EthioJobsScrapeLog
+  ```
+  The base appends `_run_summary(run)` to the site log, bumps totals + worst
+  status, and returns the pk — no per-site copy/paste needed.
 - Run orchestration: `scrape()` (one page) and `scrape_many()` (sweep), both
   finalize via `_close()` which writes the per-site log first, then the master
   day log. Every HTTP request is counted in `api_hits`/`pages_hit`.
 - `last_run()` — the most recent run entry, read from the per-site log.
 
-### What a new concrete scraper must implement/override
+### Concrete scraper types
+- **`GraphQLScraper`** (Afriwork) — POST a query with variables; `date_filter`
+  with from/to vars ⇒ server-side today window. `site_log_model =
+  AfriworkScrapeLog`.
+- **`RestJsonScraper`** (EthioJobs) — GET a paged JSON API (`results_path`,
+  `page_1_based`, `page_key`/`limit_key`); client-side today filter via
+  `_keep_item`/`_past_today_boundary`. Auth tokens read from
+  `settings.ETHIOJOBS_TOKEN` and injected into the `x-custom-header` (a
+  longer-lived token goes in `.env`; the seed stores an empty placeholder).
+
+### What a NEW concrete scraper must implement/override
 ```python
-class EthioJobsScraper(GraphQLScraper):   # or BaseScraper for a new type
+class EthioJobsScraper(BaseScraper):       # or reuse RestJsonScraper/GraphQLScraper
+    site_log_model = EthioJobsScrapeLog    # the only log-related line
+
     def fetch(self, page=0): ...           # GET/POST one page; call _record_api_call()
     def parse(self, raw): ...              # return list of raw item dicts
-    def _save_detail(self, item, instance): ...   # create/update EthioJobsJob, link it
-    def record_detail_log(self, run, day): ...    # append to EthioJobsScrapeLog, return pk
+    def _save_detail(self, item, instance): ...   # create/update the site's Job model, link it
+    # optional: _keep_item / _past_today_boundary for client-side today filter
 ```
-
-`record_detail_log` is always the same shape (copy it from `graphql.py` — it
-appends `self._run_summary(run)` to the site log, bumps totals + worst status,
-returns `str(day_log.pk)`).
 
 ### Register a scraper type (only needed for a brand-new kind of site)
 `core/scrapers/factory.py`:
 ```python
 ScraperFactory.register(ScraperType.HTML, HtmlScraper)   # or NEXTJS / PLAYWRIGHT
 ```
-GraphQL-based sites (like Afriwork) reuse `GraphQLScraper` — no factory change.
+GraphQL sites reuse `GraphQLScraper`; paged GET/JSON sites reuse
+`RestJsonScraper` — no factory change.
 
 ### Seed the Source row
 Append to `core/management/commands/seed_sources.py` (idempotent
@@ -345,22 +377,30 @@ Add the new website's sample payload to the test suite (following
 ## 11. THE NEW-WEBSITE CHECKLIST (follow in order)
 
 1. **Inspect the website** (Network tab — see §12 for exactly what to grab).
-2. **Add the per-website item model** (`EthioJobsJob`) mirroring the API payload
+2. **Decide the dedup key carefully.** `external_id` must be the STABLE
+   identifier. EthioJobs' encrypted `id` rotates on every request (verified
+   live!) — its `slug` is stable, so that's the key; the rotating id is kept
+   in a separate `api_id` column for reference. If in doubt, fetch the same
+   listing twice and compare.
+3. **Add the per-website item model** (`EthioJobsJob`) mirroring the API payload
    + `job_number`/`numbered_on`; add the `OneToOneField` on `ScrapedItem`.
-3. **Add the per-website log model** (`EthioJobsScrapeLog`) — copy
+4. **Add the per-website log model** (`EthioJobsScrapeLog`) — copy
    `AfriworkScrapeLog`.
-4. **Append it to `SITE_LOG_MODELS`** in `core/models.py`.
-5. **Write the scraper** — reuse `GraphQLScraper` (or new type) implementing
-   `fetch`/`parse`/`_save_detail`/`record_detail_log`.
-6. **Add the Source row** to `seed_sources.py` (query, headers, field_mapping,
+5. **Append it to `SITE_LOG_MODELS`** in `core/models.py`.
+6. **Write the scraper** — reuse `RestJsonScraper` (GET/JSON) or
+   `GraphQLScraper` (query POST), or write a new type implementing
+   `fetch`/`parse`/`_save_detail`; set `site_log_model`; add
+   `_keep_item`/`_past_today_boundary` only if today is filtered client-side.
+7. **Add the Source row** to `seed_sources.py` (query, headers, field_mapping,
    pagination, only_today/date_filter) and run `python manage.py seed_sources`.
-7. **Migrate**: `makemigrations core && migrate`.
-8. **Scrape**: `python manage.py scrape_source <slug>` — verify #01 ordering,
-   dedup, and that a second scrape only adds new jobs.
-9. **Snapshot**: `python manage.py capture_structure <slug>`; commit the file.
-10. **Register admin** for the two new models.
-11. **Extend tests** with the sample payload + the three test families.
-12. **Verify**: `python manage.py daily_check` → all three sections pass.
+8. **Migrate**: `makemigrations core && migrate`.
+9. **Scrape**: `python manage.py scrape_source <slug>` — verify #01 ordering,
+   dedup, today-only boundary, and that a second scrape only adds new jobs
+   (should fetch 1 page and skip everything).
+10. **Snapshot**: `python manage.py capture_structure <slug>`; commit the file.
+11. **Register admin** for the two new models.
+12. **Extend tests** with the sample payload + the three test families.
+13. **Verify**: `python manage.py daily_check` → all three sections pass.
 
 ---
 
@@ -382,7 +422,11 @@ filter **Fetch/XHR**), grab:
    (query param or body field)? This decides `date_filter`/`only_today`.
 6. **Job detail URL pattern** — the link format for one job (e.g.
    `https://ethiojobs.net/job/1234`) for the item `url` field.
-7. **Any required cookies / CSRF tokens** — whether anonymous requests work or
-   the scraper must send extra headers.
+7. **Any required cookies / CSRF tokens / JWT headers** — whether anonymous
+   requests work or the scraper must send extra headers (EthioJobs requires a
+   JWT in `x-custom-header`; tokens go in `.env` as `ETHIOJOBS_TOKEN`).
+8. **Dedup key stability** — fetch the same page twice; if the id changes
+   between responses (EthioJobs does this), find a stable key (slug, URL,
+   title+date) before writing any code.
 
-With those seven things, the checklist in §11 is mechanical.
+With those eight things, the checklist in §11 is mechanical.

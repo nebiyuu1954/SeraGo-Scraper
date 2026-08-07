@@ -29,6 +29,7 @@ class TimeStampedModel(models.Model):
 
 class ScraperType(models.TextChoices):
     GRAPHQL = "graphql", "GraphQL (Hasura)"
+    REST = "rest", "REST JSON API"
     NEXTJS = "nextjs", "Next.js data API"
     HTML = "html", "Server-side HTML"
     PLAYWRIGHT = "playwright", "Headless browser (Playwright)"
@@ -152,8 +153,9 @@ class ScrapedItem(TimeStampedModel):
         blank=True,
         help_text="Local day this item was numbered on.",
     )
-    # Per-site detail record (one per site, e.g. AfriworkJob) — isolates
-    # site-specific data while ScrapedItem stays the universal contract.
+    # Per-site detail records (one per site, e.g. AfriworkJob, EthioJobsJob) —
+    # isolates site-specific data while ScrapedItem stays the universal
+    # contract. Each website gets its own OneToOne link; only one is set.
     afriwork_job = models.OneToOneField(
         "AfriworkJob",
         on_delete=models.SET_NULL,
@@ -161,6 +163,14 @@ class ScrapedItem(TimeStampedModel):
         blank=True,
         related_name="scraped_item_master",
         help_text="Afriwork-specific detail row for this listing.",
+    )
+    ethiojobs_job = models.OneToOneField(
+        "EthioJobsJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scraped_item_master",
+        help_text="EthioJobs-specific detail row for this listing.",
     )
 
     class Meta:
@@ -359,9 +369,105 @@ class AfriworkScrapeLog(TimeStampedModel):
         return f"Afriwork · {self.day} · {self.run_count} run(s) · {self.status}"
 
 
+class EthioJobsJob(TimeStampedModel):
+    """EthioJobs-specific job details (per-site model, isolated per website).
+
+    Mirrors the EthioJobs REST API shape (``api.ethiojobs.net/ethiojobs/api/
+    job-board/jobs``): every field the API returns for a listing is stored
+    here so nothing is lost. ``external_id`` is the API's opaque encrypted
+    job id; ``slug`` is the human-readable URL segment. Linked from
+    ``ScrapedItem.ethiojobs_job``; other websites get their own model too,
+    following the same master + per-site pattern.
+    """
+
+    external_id = models.CharField(max_length=500, unique=True, help_text="Dedup key — the stable job slug (the encrypted id rotates per request).")
+    api_id = models.TextField(blank=True, default="", help_text="The API's opaque encrypted job id (rotates every request; kept for reference).")
+    slug = models.CharField(max_length=500, blank=True, default="", help_text="URL slug, e.g. 'asJrYsRdI8-senior-international-banking-officer'.")
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, default="")
+    state = models.CharField(max_length=255, blank=True, default="", help_text="State/region, e.g. 'Addis Ababa'.")
+    type = models.PositiveIntegerField(null=True, blank=True, help_text="Numeric job type code from the API.")
+    level = models.CharField(max_length=32, blank=True, default="", help_text="Experience level code, e.g. '3'.")
+    location_type = models.CharField(max_length=64, blank=True, default="", help_text="Office / Remote / Hybrid / ...")
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    deadline = models.DateTimeField(null=True, blank=True, help_text="date_expiry from the API.")
+    catalogs = models.JSONField(default=list, blank=True, help_text="[{id, name, options}] category list, e.g. Banking and Insurance.")
+    company = models.JSONField(default=dict, blank=True, help_text="The full company object the API returns (name, slug, logo, ...).")
+    application_method = models.CharField(max_length=64, blank=True, default="", help_text="ATS / EMAIL / CAREER_PAGE_LINK / IN_PERSON / ...")
+    application_email = models.EmailField(max_length=255, blank=True, default="")
+    career_page_link = models.URLField(max_length=1000, blank=True, default="")
+    application_form = models.JSONField(null=True, blank=True, help_text="Embedded application form payload when present.")
+    raw_payload = models.JSONField(default=dict, blank=True)
+    # Same per-day numbering as the master ScrapedItem (01, 02, ...).
+    job_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-day sequential number, mirroring ScrapedItem.job_number.",
+    )
+    numbered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Local day this job was numbered on.",
+    )
+
+    class Meta:
+        ordering = ["-numbered_on", "job_number"]
+
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
+    def __str__(self):
+        return f"{self.job_number_display} · {self.title}"
+
+
+class EthioJobsScrapeLog(TimeStampedModel):
+    """Per-website log for EthioJobs — ONE record per (source, day).
+
+    Identical contract to ``AfriworkScrapeLog``: each scrape run that day
+    APPENDS its summary to ``scraped_log`` and bumps the day totals. The
+    master ``ScrapeLog`` references this row via its ``websites`` bucket
+    (``table`` + ``log_id``).
+    """
+
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="ethiojobs_day_logs")
+    day = models.DateField(db_index=True, help_text="The local day this rollup covers.")
+    status = models.CharField(
+        max_length=16,
+        choices=ScrapeStatus.choices,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's runs.",
+    )
+    run_count = models.PositiveIntegerField(default=0, help_text="How many scrape runs happened this day.")
+    api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests made this day.")
+    items_found = models.PositiveIntegerField(default=0, help_text="Total items found this day.")
+    items_inserted = models.PositiveIntegerField(default=0)
+    items_updated = models.PositiveIntegerField(default=0)
+    items_skipped = models.PositiveIntegerField(default=0)
+    scraped_log = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="One summary entry per scrape run that day (grows as we scrape).",
+    )
+
+    class Meta:
+        ordering = ["-day"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "day"], name="uniq_ethiojobs_daylog_src_day"),
+        ]
+
+    def last_run(self) -> dict | None:
+        """The most recent run entry for this site/day."""
+        return self.scraped_log[-1] if self.scraped_log else None
+
+    def __str__(self):
+        return f"EthioJobs · {self.day} · {self.run_count} run(s) · {self.status}"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.
 # Append new website logs here as they are built (e.g. ``HaHuScrapeLog``)
 # and the master rollup picks them up automatically.
-SITE_LOG_MODELS = [AfriworkScrapeLog]
+SITE_LOG_MODELS = [AfriworkScrapeLog, EthioJobsScrapeLog]

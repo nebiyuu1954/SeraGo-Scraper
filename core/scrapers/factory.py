@@ -9,6 +9,7 @@ from core.models import ScraperType, Source
 
 from .base import BaseScraper
 from .graphql import GraphQLScraper
+from .rest import RestJsonScraper
 
 
 class ScraperFactory:
@@ -16,6 +17,7 @@ class ScraperFactory:
 
     _registry: dict[str, type[BaseScraper]] = {
         ScraperType.GRAPHQL: GraphQLScraper,
+        ScraperType.REST: RestJsonScraper,
     }
 
     @classmethod

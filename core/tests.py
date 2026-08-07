@@ -19,9 +19,19 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from core.models import AfriworkScrapeLog, ScrapeLog, ScrapeStatus, Source
+from core.models import (
+    AfriworkScrapeLog,
+    EthioJobsJob,
+    EthioJobsScrapeLog,
+    ScrapeLog,
+    ScrapeStatus,
+    ScrapedItem,
+    Source,
+)
 from core.reporting import api_issues_for_day
 from core.scrapers.graphql import GraphQLScraper
+from core.scrapers.rest import RestJsonScraper
+from core.scrapers.base import transform_job_type_code
 from core.structures import (
     compare_structures,
     extract_structure,
@@ -58,6 +68,118 @@ AFRIWORK_SAMPLE = {
     "experience_level": "JUNIOR",
     "entity": {"type": "company", "name": "Dodai Manufacturing PLC"},
 }
+
+# A faithful sample of ONE EthioJobs job object (a subset of the live
+# capture — the flattened paths must stay inside ethiojobs.json).
+ETHIOJOBS_SAMPLE = {
+    "id": "eyJpdiI6IlJoUWFkaURaL0JqOUlvUlRIOVVpMFE9PSIsInZhbHVlIjoiUm1zQmpxRE5zTzllTlVYMmIvVFRtZz09IiwibWFjIjoiMGEzMTJlM2Y0YmMxNzQ3YzYzOGU5ZWFhYmU2YjMwZDdjY2Y4ZmJlNDVmNzBiMjgxOTUwNTcwOWI5ZjkyZjEwNiIsInRhZyI6IiJ9",
+    "title": "Senior International Banking Officer",
+    "slug": "asJrYsRdI8-senior-international-banking-officer",
+    "type": 8,
+    "date_published": "2026-08-07T10:52:43.000000Z",
+    "level": "3",
+    "location_type": "Office",
+    "description": "<p>Some job description</p>",
+    "state": "Addis Ababa",
+    "catalogs": [{"id": "abc123", "name": "Banking and Insurance", "options": 346}],
+    "date_expiry": "2026-08-13T23:59:59.000000Z",
+    "company": {
+        "id": "company-encrypted-id",
+        "listings_id": "459d3a24c3",
+        "slug": "ahadu-bank-sc",
+        "parent_id": 0,
+        "type": "regular",
+        "name": "Ahadu Bank S.C",
+        "name_legal": "Ahadu Bank S.C",
+        "logo": "company-logo/809736/images__1_.png",
+        "phone": None,
+        "email": "mikre.a@ahadubank.com",
+        "website": "",
+        "description": "<p>About the company</p>",
+        "industry_id": "industry-encrypted-id",
+        "contacts": "{\"phone\":null,\"email\":\"mikre.a@ahadubank.com\"}",
+        "social": "[]",
+        "segments": None,
+        "activated_at": "2022-07-31 08:53:01",
+        "verified_at": None,
+        "created_by": None,
+        "updated_by": "updated-by-encrypted",
+        "deleted_by": None,
+        "deleted_at": None,
+        "created_at": "2024-07-19 04:02:07",
+        "updated_at": "2025-08-07 08:32:42",
+        "banner_image": "company-banner/809736/ahadu-card-bank-1.jpg",
+        "slogan": None,
+        "date_founded": None,
+        "total_employees": None,
+        "local_employees": None,
+        "videos": None,
+        "benefits": None,
+        "quote_details": None,
+        "quote_image": None,
+        "featured": "1",
+        "show_tour": 1,
+    },
+    "application_form": None,
+    "career_page_link": None,
+    "application_method": "ATS",
+    "application_email": None,
+}
+
+ETHIOJOBS_SAMPLE_PATHS = [
+    "application_email",
+    "application_form",
+    "application_method",
+    "career_page_link",
+    "catalogs.id",
+    "catalogs.name",
+    "catalogs.options",
+    "company.activated_at",
+    "company.banner_image",
+    "company.benefits",
+    "company.contacts",
+    "company.created_at",
+    "company.created_by",
+    "company.date_founded",
+    "company.deleted_at",
+    "company.deleted_by",
+    "company.description",
+    "company.email",
+    "company.featured",
+    "company.id",
+    "company.industry_id",
+    "company.listings_id",
+    "company.local_employees",
+    "company.logo",
+    "company.name",
+    "company.name_legal",
+    "company.parent_id",
+    "company.phone",
+    "company.quote_details",
+    "company.quote_image",
+    "company.segments",
+    "company.show_tour",
+    "company.slogan",
+    "company.slug",
+    "company.social",
+    "company.total_employees",
+    "company.type",
+    "company.updated_at",
+    "company.updated_by",
+    "company.verified_at",
+    "company.videos",
+    "company.website",
+    "date_expiry",
+    "date_published",
+    "description",
+    "id",
+    "level",
+    "location_type",
+    "slug",
+    "state",
+    "title",
+    "type",
+]
 
 AFRIWORK_SAMPLE_PATHS = [
     "approval_status",
@@ -171,6 +293,123 @@ class StructureTests(TestCase):
             self.assertEqual(payload["fields"], AFRIWORK_SAMPLE_PATHS)
 
 
+    def test_ethiojobs_snapshot_exists_and_contains_core_structure(self):
+        snapshot = load_structure("ethiojobs")
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["source"], "ethiojobs")
+        missing = set(ETHIOJOBS_SAMPLE_PATHS) - set(snapshot["fields"])
+        self.assertFalse(missing, f"EthioJobs snapshot is missing core fields: {sorted(missing)}")
+
+    def test_extract_structure_matches_ethiojobs_sample(self):
+        self.assertEqual(extract_structure(ETHIOJOBS_SAMPLE), ETHIOJOBS_SAMPLE_PATHS)
+
+    def test_job_type_code_transform(self):
+        self.assertEqual(transform_job_type_code(8), "OTHER")
+        self.assertEqual(transform_job_type_code(1), "FULL_TIME")
+        self.assertEqual(transform_job_type_code(3), "CONTRACT")
+        self.assertIsNone(transform_job_type_code(None))
+
+
+class RestScraperTests(TestCase):
+    """The REST scraper: config-driven today filter, boundary, generic day log."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="ethiojobs",
+            name="EthioJobs",
+            endpoint="https://api.ethiojobs.net/ethiojobs/api/job-board/jobs",
+            scraper_type="rest",
+            only_today=True,
+            field_mapping={
+                "external_id": "slug",
+                "title": "title",
+                "location": {"path": "state", "transforms": ["clean_text"]},
+                "job_type": {"path": "type", "transforms": ["job_type_code"]},
+                "published_at": {"path": "date_published", "transforms": ["parse_datetime"]},
+                "deadline": {"path": "date_expiry", "transforms": ["parse_datetime"]},
+            },
+            pagination={
+                "page_size": 10,
+                "results_path": "data",
+                "page_1_based": True,
+                "date_filter": {"field": "published_at"},
+                "max_pages": 100,
+            },
+        )
+        self.scraper = RestJsonScraper(self.source)
+
+    @staticmethod
+    def _item(days_ago=0):
+        """A normalized item published ``days_ago`` days from now (UTC)."""
+        from datetime import timedelta
+
+        return {
+            "external_id": "slug-%d" % days_ago,
+            "title": "Job %d" % days_ago,
+            "location": "Addis Ababa",
+            "job_type": "OTHER",
+            "published_at": timezone.now() - timedelta(days=days_ago),
+            "raw_data": {"slug": "slug-%d" % days_ago},
+        }
+
+    def test_query_params_are_1_based(self):
+        params = self.scraper._query_params(0)
+        self.assertEqual(params["page"], 1)
+        self.assertEqual(params["limit"], 10)
+        self.assertEqual(self.scraper._query_params(6)["page"], 7)
+
+    def test_keep_item_drops_pre_today(self):
+        self.assertTrue(self.scraper._keep_item(self._item(0)))
+        self.assertFalse(self.scraper._keep_item(self._item(1)))
+        self.assertFalse(self.scraper._keep_item(self._item(2)))
+
+    def test_past_today_boundary(self):
+        # A page with only pre-today items marks the boundary.
+        self.assertTrue(
+            self.scraper._past_today_boundary(6, [self._item(1), self._item(2)])
+        )
+        # A page with today's items (even mixed) does not.
+        self.assertFalse(
+            self.scraper._past_today_boundary(0, [self._item(0), self._item(1)])
+        )
+        self.assertFalse(self.scraper._past_today_boundary(0, [self._item(0)]))
+
+    def test_save_detail_persists_everything_and_links_master(self):
+        item = self.scraper.normalize(ETHIOJOBS_SAMPLE)
+        item["raw_data"] = ETHIOJOBS_SAMPLE
+        master_item = ScrapedItem.objects.create(
+            source=self.source,
+            external_id=item["external_id"],
+            title=item["title"],
+            job_number=1,
+            numbered_on=timezone.localdate(),
+        )
+        self.scraper._save_detail(item, master_item)
+        detail = EthioJobsJob.objects.get(external_id=item["external_id"])
+        self.assertEqual(detail.api_id, ETHIOJOBS_SAMPLE["id"])
+        self.assertEqual(detail.slug, ETHIOJOBS_SAMPLE["slug"])
+        self.assertEqual(detail.company["name"], "Ahadu Bank S.C")
+        self.assertEqual(detail.state, "Addis Ababa")
+        self.assertEqual(detail.job_number, 1)
+        master_item.refresh_from_db()
+        self.assertEqual(master_item.ethiojobs_job_id, detail.pk)
+
+    def test_generic_record_detail_log_writes_ethiojobs_site_log(self):
+        scraper = RestJsonScraper(self.source)
+        run = make_run(api_hits=2, found=3)
+        log_id = scraper.record_detail_log(run, timezone.localdate())
+        self.assertIsNotNone(log_id)
+        site_log = EthioJobsScrapeLog.objects.get()
+        self.assertEqual(len(site_log.scraped_log), 1)
+        self.assertEqual(site_log.api_hits, 2)
+        # The master bucket references the right table.
+        master = scraper._update_master_day_log(run, timezone.localdate(), log_id)
+        bucket = master.website("ethiojobs")
+        self.assertEqual(bucket["table"], "EthioJobsScrapeLog")
+        self.assertEqual(bucket["log_id"], log_id)
+        self.assertEqual(bucket["status"], "success")
+
+
 class ApiIssueTests(TestCase):
     """Every API response of the day must be visible; non-200s must be caught."""
 
@@ -244,6 +483,31 @@ class ApiIssueTests(TestCase):
         run_issue = next(i for i in issues if i["kind"] == "run")
         self.assertEqual(run_issue["status"], "failed")
         self.assertIn("HTTPStatusError", run_issue["message"])
+
+    def test_issue_reported_from_second_website(self):
+        # A non-200 from EthioJobs must be attributed to EthioJobs.
+        ej_source = Source.objects.create(
+            slug="ethiojobs", name="EthioJobs", endpoint="https://example.com/jobs"
+        )
+        run = make_run(api_hits=1, found=0)
+        run["pages_hit"] = [{"page": 0, "http_status": 503, "found": 0}]
+        EthioJobsScrapeLog.objects.create(
+            source=ej_source,
+            day=self.today,
+            status="failed",
+            run_count=1,
+            api_hits=1,
+            items_found=0,
+            items_inserted=0,
+            items_updated=0,
+            items_skipped=0,
+            scraped_log=[run],
+        )
+        issues = api_issues_for_day(self.today)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["website"], "ethiojobs")
+        self.assertEqual(issues[0]["table"], "EthioJobsScrapeLog")
+        self.assertEqual(issues[0]["http_status"], 503)
 
     def test_log_report_command_prints_issues(self):
         run = make_run(api_hits=2, found=3)

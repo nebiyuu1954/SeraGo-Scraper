@@ -138,6 +138,11 @@ STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# EthioJobs API JWT (x-custom-header). The seeded source config reads it from
+# here at fetch time, so a fresh token can be swapped in without touching the
+# database. Set ETHIOJOBS_TOKEN in the environment (or .env) for production.
+ETHIOJOBS_TOKEN = os.environ.get("ETHIOJOBS_TOKEN", "")
+
 
 # Logging — observable, structured console logs (Flower/Celery later).
 

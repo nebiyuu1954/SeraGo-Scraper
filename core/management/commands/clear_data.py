@@ -18,12 +18,21 @@ from django.core.management.base import BaseCommand, CommandError
 from core.models import (
     AfriworkJob,
     AfriworkScrapeLog,
+    EthioJobsJob,
+    EthioJobsScrapeLog,
     ScrapeLog,
     ScrapedItem,
 )
 
 # All data tables that hold scraped content. Source is deliberately excluded.
-DATA_MODELS = [ScrapedItem, ScrapeLog, AfriworkJob, AfriworkScrapeLog]
+DATA_MODELS = [
+    ScrapedItem,
+    ScrapeLog,
+    AfriworkJob,
+    AfriworkScrapeLog,
+    EthioJobsJob,
+    EthioJobsScrapeLog,
+]
 
 
 class Command(BaseCommand):

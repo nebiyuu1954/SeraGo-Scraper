@@ -89,12 +89,41 @@ AFRIWORK_PAGINATION = {
     "max_pages": 50,
 }
 
+# EthioJobs — REST GET API: api.ethiojobs.net/ethiojobs/api/job-board/jobs.
+# Paginated with 1-based ?page=N&limit=M, newest-first by date_published.
+# The JWT in x-custom-header is read from settings.ETHIOJOBS_TOKEN at fetch
+# time (a longer-lived token can be provided via the ETHIOJOBS_TOKEN env var
+# or DJANGO_SETTINGS; the seeded placeholder is replaced in production).
+ETHIOJOBS_FIELD_MAPPING = {
+    # Dedup key: the stable slug. The API's encrypted 'id' rotates on every
+    # request, so it can never be used to identify the same job twice.
+    "external_id": "slug",
+    "title": "title",
+    "description": {"path": "description", "transforms": ["strip_html"]},
+    "company": "company.name",
+    "location": {"path": "state", "transforms": ["clean_text"]},
+    "job_type": {"path": "type", "transforms": ["job_type_code"]},
+    "published_at": {"path": "date_published", "transforms": ["parse_datetime"]},
+    "deadline": {"path": "date_expiry", "transforms": ["parse_datetime"]},
+}
+
+ETHIOJOBS_PAGINATION = {
+    "page_size": 10,
+    "results_path": "data",
+    "page_1_based": True,  # the API numbers pages from 1
+    # No from_var/to_var: the API cannot filter by date server-side, so the
+    # RestJsonScraper stops the sweep client-side once a page is older than
+    # today (see RestJsonScraper._past_today_boundary).
+    "date_filter": {"field": "published_at"},
+    "max_pages": 100,
+}
+
 
 class Command(BaseCommand):
     help = "Create or update the built-in source configurations (idempotent)."
 
     def handle(self, *args, **options):
-        defaults = {
+        afriwork_defaults = {
             "name": "Afriwork (Freelance Ethiopia)",
             "base_url": "https://afriworket.com/jobs",
             "scraper_type": ScraperType.GRAPHQL,
@@ -106,5 +135,28 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        source, created = Source.objects.update_or_create(slug="afriwork", defaults=defaults)
-        self.stdout.write(self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {source}"))
+        afriwork, created = Source.objects.update_or_create(
+            slug="afriwork", defaults=afriwork_defaults
+        )
+        self.stdout.write(
+            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {afriwork}")
+        )
+
+        ethiojobs_defaults = {
+            "name": "EthioJobs",
+            "base_url": "https://ethiojobs.net/jobs",
+            "scraper_type": ScraperType.REST,
+            "endpoint": "https://api.ethiojobs.net/ethiojobs/api/job-board/jobs",
+            "headers": {"x-custom-header": ""},  # JWT injected from settings at fetch time
+            "query": "",
+            "field_mapping": ETHIOJOBS_FIELD_MAPPING,
+            "pagination": ETHIOJOBS_PAGINATION,
+            "scrape_interval_hours": 24,
+            "is_active": True,
+        }
+        ethiojobs, created = Source.objects.update_or_create(
+            slug="ethiojobs", defaults=ethiojobs_defaults
+        )
+        self.stdout.write(
+            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {ethiojobs}")
+        )

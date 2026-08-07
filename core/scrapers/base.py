@@ -36,7 +36,6 @@ from django.utils import timezone
 from core.models import SITE_LOG_MODELS, ScrapeLog, ScrapedItem, ScrapeStatus, Source
 
 logger = logging.getLogger(__name__)
-
 # Sort key fallback for items without a published date (they sort last).
 _MIN_DATETIME = datetime.min.replace(tzinfo=dt_timezone.utc)
 
@@ -109,11 +108,30 @@ def transform_parse_datetime(value: Any) -> datetime | None:
     return parsed
 
 
+def transform_job_type_code(value: Any) -> str | None:
+    """Map a numeric job-type code to the shared JobType string (EthioJobs)."""
+    if value is None:
+        return None
+    try:
+        return {
+            1: "FULL_TIME",
+            2: "PART_TIME",
+            3: "CONTRACT",
+            4: "INTERNSHIP",
+            5: "FREELANCE",
+            6: "TEMPORARY",
+            7: "REMOTE",
+        }.get(int(value), "OTHER")
+    except (TypeError, ValueError):
+        return "OTHER"
+
+
 TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "strip_html": transform_strip_html,
     "clean_text": transform_clean_text,
     "upper": transform_upper,
     "parse_datetime": transform_parse_datetime,
+    "job_type_code": transform_job_type_code,
 }
 
 
@@ -124,6 +142,12 @@ TRANSFORMS: dict[str, Callable[[Any], Any]] = {
 
 class BaseScraper(ABC):
     """Configuration-driven scraper pipeline shared by every scraper type."""
+
+    #: The per-website day-log model this scraper writes to (ONE row per
+    #: (source, day)). Concrete scrapers set this to their site's log, e.g.
+    #: ``AfriworkScrapeLog`` / ``EthioJobsScrapeLog``. Kept on the class so
+    #: the generic :meth:`record_detail_log` works for every website.
+    site_log_model: type | None = None
 
     def __init__(self, source: Source):
         self.source = source
@@ -194,11 +218,32 @@ class BaseScraper(ABC):
     def record_detail_log(self, run: dict, day: date) -> str | None:
         """Append this run to the per-website day log; return its pk (or None).
 
-        Subclasses override this to write their site-specific log (e.g.
-        AfriworkScrapeLog). The returned pk is stored on the master log's
-        ``websites`` bucket as ``log_id`` so the master references it.
+        ONE record per (source, day): each run appends its summary to
+        ``scraped_log`` and bumps the day totals (api_hits, items_*, worst
+        status). The returned pk is stored on the master log's ``websites``
+        bucket as ``log_id`` so the master references this site log.
+        Failures are handled by the caller (BaseScraper._close).
+
+        Concrete scrapers only need to set ``site_log_model``; this generic
+        implementation works for every per-website log because they all
+        share the same contract (source, day, status, run_count, api_hits,
+        items_*, scraped_log).
         """
-        return None
+        model = self.site_log_model
+        if model is None:
+            return None
+        day_log, _ = model.objects.get_or_create(source=self.source, day=day)
+        entry = self._run_summary(run)
+        day_log.scraped_log.append(entry)
+        day_log.run_count += 1
+        day_log.api_hits += run.get("api_hits", 0)
+        day_log.items_found += run.get("items_found", 0)
+        day_log.items_inserted += run.get("items_inserted", 0)
+        day_log.items_updated += run.get("items_updated", 0)
+        day_log.items_skipped += run.get("items_skipped", 0)
+        day_log.status = self._worst_status(day_log.status, run.get("status"))
+        day_log.save()
+        return str(day_log.pk)
 
     # -- stages implemented here (config-driven) --
 
@@ -267,7 +312,12 @@ class BaseScraper(ABC):
         return site_log is not None and site_log.status == ScrapeStatus.SUCCESS
 
     def _page_items(self, page: int) -> tuple[list[dict], int | None]:
-        """Fetch + normalize one page. Returns (items, http_status)."""
+        """Fetch + normalize one page. Returns (kept_items, http_status).
+
+        ``_keep_item`` is applied here (the choke point used by both
+        ``scrape()`` and ``scrape_many()``), so client-side today filtering
+        behaves identically on a single-page run and a sweep.
+        """
         raw = self.fetch(page)
         http_status = self.api_calls[-1]["http_status"] if self.api_calls else None
 
@@ -275,8 +325,30 @@ class BaseScraper(ABC):
         for raw_item in self.parse(raw):
             item = self.normalize(raw_item)
             item["raw_data"] = raw_item
-            items.append(item)
+            if self._keep_item(item):
+                items.append(item)
         return items, http_status
+
+    def _past_today_boundary(self, page: int, items: list[dict]) -> bool:
+        """True when this page of items is already past today's listings.
+
+        Hook for scrapers whose API cannot filter by date server-side: the
+        listings come newest-first, so once a page contains ONLY items older
+        than today, everything below it is older too and the sweep can stop
+        (today-only mode). Concrete scrapers override this; the default
+        (server-side date filtering) is a no-op.
+        """
+        return False
+
+    def _keep_item(self, item: dict) -> bool:
+        """Whether a normalized item should be saved at all.
+
+        Hook for scrapers whose API cannot filter by date server-side: pages
+        may mix today's and older items, so the ones older than today are
+        dropped here while newer pages are still swept. The default keeps
+        everything.
+        """
+        return True
 
     def _run_page(self, page: int) -> dict:
         """One page: fetch -> parse -> normalize -> save. Returns stats."""
@@ -683,6 +755,9 @@ class BaseScraper(ABC):
         try:
             for page in range(max_pages):
                 items, http_status = self._page_items(page)
+                # ``items`` is already today-filtered (see _page_items); the
+                # sweep continues through mixed pages and only ends once a
+                # page has no today items at all.
                 totals["found"] += len(items)
                 pages_hit.append(
                     {"page": page, "http_status": http_status, "found": len(items)}
@@ -696,9 +771,16 @@ class BaseScraper(ABC):
                 all_items.extend(items)
 
                 if not items:
+                    # Genuinely empty page: the API has nothing more to return
+                    # (either mode). Pages whose items were ALL pre-today and
+                    # filtered out also land here and stop the sweep.
                     break
                 if any(pid in today_ids for pid in page_ids):
                     # Reached the last known record — everything newer was new.
+                    break
+                if self.only_today and self._past_today_boundary(page, items):
+                    # API can't filter by date: this page has no today items,
+                    # so everything below it is older than today too.
                     break
                 if all_seen_before:
                     break
