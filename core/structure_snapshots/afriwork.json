@@ -1,0 +1,29 @@
+{
+  "source": "afriwork",
+  "captured_at": "2026-08-07T10:48:40.515675+00:00",
+  "fields": [
+    "approval_status",
+    "city.country.name",
+    "city.name",
+    "compensation_amount_cents",
+    "compensation_currency",
+    "compensation_type",
+    "created_at",
+    "deadline",
+    "description",
+    "entity.name",
+    "entity.type",
+    "experience_level",
+    "id",
+    "job_site",
+    "job_type",
+    "published_at",
+    "refreshed_at",
+    "sectors.sector.id",
+    "sectors.sector.name",
+    "skill_requirements.skill.id",
+    "skill_requirements.skill.name",
+    "title",
+    "updated_at"
+  ]
+}
