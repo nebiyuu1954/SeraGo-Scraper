@@ -284,11 +284,27 @@ Everything config-driven. The base also provides:
 - **`GraphQLScraper`** (Afriwork) — POST a query with variables; `date_filter`
   with from/to vars ⇒ server-side today window. `site_log_model =
   AfriworkScrapeLog`.
+- **`HaHuJobsScraper`** (HaHu Jobs, second GraphQL site) — subclasses
+  `GraphQLScraper` so the whole pipeline is reused; it only adds
+  `site_log_model = HaHuScrapeLog`, the `HaHuJob` detail row, a location
+  derived from the nested `job_cities` list, and a `save_items()` override
+  that drops ethiojobs-sourced listings (we scrape EthioJobs directly).
+  Because it shares `scraper_type=graphql` with Afriwork, the factory
+  dispatches it by **slug**: `ScraperFactory._slug_registry` maps
+  `"hahujobs"` → `HaHuJobsScraper`, checked before `scraper_type`. A future
+  second REST site registers its scraper class the same way.
 - **`RestJsonScraper`** (EthioJobs) — GET a paged JSON API (`results_path`,
   `page_1_based`, `page_key`/`limit_key`); client-side today filter via
   `_keep_item`/`_past_today_boundary`. Auth tokens read from
   `settings.ETHIOJOBS_TOKEN` and injected into the `x-custom-header` (a
   longer-lived token goes in `.env`; the seed stores an empty placeholder).
+
+Note on client-side filters: `_keep_item`/`_past_today_boundary` are designed
+for DATE-based filtering (an all-old page legitimately ends the sweep).
+Source-based filters (e.g. HaHuJobs skipping ethiojobs listings) must NOT use
+`_keep_item` — an all-ethiojobs page would look empty and truncate the sweep.
+Filter inside `save_items()` instead, and count the dropped items as
+`skipped`, so pagination and the incremental-stop boundary stay correct.
 
 ### What a NEW concrete scraper must implement/override
 ```python

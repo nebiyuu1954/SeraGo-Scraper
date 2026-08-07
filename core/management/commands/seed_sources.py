@@ -118,6 +118,122 @@ ETHIOJOBS_PAGINATION = {
     "max_pages": 100,
 }
 
+# HaHuJobs — aggregator GraphQL API: graph.aggregator.hahu.jobs/v1/graphql.
+# The feed mixes listings from many upstream sources (hahujobs_telegram,
+# hahujobs_enterprise, addis_zemen_gazette, ethiojobs, ...); the scraper
+# (core/scrapers/hahujobs.py) skips ethiojobs-sourced listings because
+# EthioJobs is scraped directly. "Today" is scoped server-side on
+# approved_on (when the aggregator listed the job): the $from/$to variables
+# are injected by the GraphQLScraper from the date_filter below.
+HAHUJOBS_QUERY = """
+query GetJobs($limit: Int, $offset: Int, $from: timestamptz, $to: timestamptz) {
+  jobs: search_jobs(
+    where: {
+      _and: [
+        {expired: {_eq: false}}
+        {requested_to_delete: {_eq: false}}
+        {approved_on: {_gte: $from, _lt: $to}}
+      ]
+    }
+    order_by: {approved_on: desc}
+    args: {}
+    offset: $offset
+    limit: $limit
+  ) {
+    id
+    title
+    total_web_view_count
+    telegram_view_count
+    total_view_count
+    type
+    max_years_of_experience
+    years_of_experience
+    summary
+    salary
+    deadline
+    expired
+    location
+    source
+    application_method
+    application_url
+    application_email
+    number_of_applicants
+    approved_on
+    job_cities {
+      city {
+        name
+        region {
+          name
+          id
+        }
+      }
+    }
+    entity {
+      logo
+      name
+      id
+    }
+    sub_sector {
+      name
+      sector {
+        name
+        id
+        icon_class
+        icon_code
+      }
+    }
+    area {
+      address
+      name
+    }
+    isco_08 {
+      isco_08_code
+      title_en
+      title_am
+    }
+    soc_2010 {
+      title
+      onetsoc_code
+    }
+    esco_code
+  }
+}
+"""
+
+HAHUJOBS_HEADERS = {
+    "Content-Type": "application/json",
+    "Origin": "https://www.hahu.jobs",
+    "Referer": "https://www.hahu.jobs/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    ),
+}
+
+HAHUJOBS_FIELD_MAPPING = {
+    "external_id": "id",
+    "title": "title",
+    "description": {"path": "summary", "transforms": ["strip_html"]},
+    "company": "entity.name",
+    # "location" is derived in the scraper: it lives inside the job_cities
+    # list (job_cities[].city.name), which dotted paths cannot reach.
+    # "salary" is coerced to a string by the scraper (master column is text;
+    # the per-site HaHuJob model stores it as a Decimal).
+    "salary": "salary",
+    "job_type": {"path": "type", "transforms": ["upper"]},
+    "published_at": {"path": "approved_on", "transforms": ["parse_datetime"]},
+    "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+}
+
+HAHUJOBS_PAGINATION = {
+    "page_size": 20,
+    "results_path": "data.jobs",
+    # Server-side today window on approved_on: the GraphQLScraper injects
+    # today's local-day bounds into the $from/$to variables.
+    "date_filter": {"field": "approved_on", "from_var": "from", "to_var": "to"},
+    "max_pages": 50,
+}
+
 
 class Command(BaseCommand):
     help = "Create or update the built-in source configurations (idempotent)."
@@ -159,4 +275,23 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {ethiojobs}")
+        )
+
+        hahujobs_defaults = {
+            "name": "HaHu Jobs",
+            "base_url": "https://www.hahu.jobs",
+            "scraper_type": ScraperType.GRAPHQL,
+            "endpoint": "https://graph.aggregator.hahu.jobs/v1/graphql",
+            "headers": HAHUJOBS_HEADERS,
+            "query": HAHUJOBS_QUERY,
+            "field_mapping": HAHUJOBS_FIELD_MAPPING,
+            "pagination": HAHUJOBS_PAGINATION,
+            "scrape_interval_hours": 24,
+            "is_active": True,
+        }
+        hahujobs, created = Source.objects.update_or_create(
+            slug="hahujobs", defaults=hahujobs_defaults
+        )
+        self.stdout.write(
+            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {hahujobs}")
         )

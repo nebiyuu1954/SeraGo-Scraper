@@ -172,6 +172,14 @@ class ScrapedItem(TimeStampedModel):
         related_name="scraped_item_master",
         help_text="EthioJobs-specific detail row for this listing.",
     )
+    hahujobs_job = models.OneToOneField(
+        "HaHuJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scraped_item_master",
+        help_text="HaHuJobs-specific detail row for this listing.",
+    )
 
     class Meta:
         ordering = ["-numbered_on", "job_number"]
@@ -465,9 +473,153 @@ class EthioJobsScrapeLog(TimeStampedModel):
         return f"EthioJobs · {self.day} · {self.run_count} run(s) · {self.status}"
 
 
+class HaHuJob(TimeStampedModel):
+    """HaHuJobs-specific job details (per-site model, isolated per website).
+
+    Mirrors the HaHuJobs GraphQL API shape (``graph.aggregator.hahu.jobs``):
+    every field the API returns for a listing is stored here so nothing is
+    lost. ``external_id`` is the API's stable job id. Linked from
+    ``ScrapedItem.hahujobs_job``. HaHuJobs is an aggregator, so ``source``
+    records which upstream website a listing came from (hahujobs_telegram,
+    hahujobs_enterprise, addis_zemen_gazette, ethiojobs, ...); listings
+    sourced from ethiojobs are skipped by the scraper because EthioJobs is
+    scraped directly.
+    """
+
+    external_id = models.CharField(max_length=255, unique=True)
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, default="", help_text="The job summary from the API.")
+    type = models.CharField(
+        max_length=32,
+        choices=JobType.choices,
+        blank=True,
+        default="",
+        help_text="full_time / contract / internship / ... (normalized).",
+    )
+    years_of_experience = models.PositiveIntegerField(null=True, blank=True)
+    max_years_of_experience = models.PositiveIntegerField(null=True, blank=True)
+    salary = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Monthly salary in ETB when the API provides it.",
+    )
+    deadline = models.DateTimeField(null=True, blank=True)
+    expired = models.BooleanField(default=False)
+    location = models.CharField(max_length=500, blank=True, default="", help_text="The API's free-text location string, if any.")
+    source = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Aggregator source, e.g. hahujobs_telegram / hahujobs_enterprise / addis_zemen_gazette.",
+    )
+    application_method = models.CharField(max_length=64, blank=True, default="", help_text="link / email / in_person / hahujobs_primary / ...")
+    application_url = models.URLField(max_length=1000, blank=True, default="")
+    application_email = models.EmailField(max_length=255, blank=True, default="")
+    number_of_applicants = models.PositiveIntegerField(null=True, blank=True)
+    approved_on = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When the aggregator approved/listed the job (published_at analog).",
+    )
+    total_web_view_count = models.PositiveIntegerField(default=0)
+    telegram_view_count = models.PositiveIntegerField(default=0)
+    total_view_count = models.PositiveIntegerField(default=0)
+    entity_id = models.CharField(max_length=64, blank=True, default="")
+    entity_name = models.CharField(max_length=255, blank=True, default="", help_text="The posting company.")
+    entity_logo = models.URLField(max_length=1000, blank=True, default="")
+    sector_id = models.CharField(max_length=64, blank=True, default="")
+    sector_name = models.CharField(max_length=255, blank=True, default="")
+    sector_icon_class = models.CharField(max_length=64, blank=True, default="")
+    sector_icon_code = models.CharField(max_length=16, blank=True, default="")
+    sub_sector_name = models.CharField(max_length=255, blank=True, default="")
+    area_name = models.CharField(max_length=255, blank=True, default="")
+    area_address = models.CharField(max_length=500, blank=True, default="")
+    isco_08_code = models.CharField(max_length=16, blank=True, default="")
+    isco_08_title_en = models.CharField(max_length=500, blank=True, default="")
+    isco_08_title_am = models.CharField(max_length=500, blank=True, default="")
+    soc_2010_title = models.CharField(max_length=500, blank=True, default="")
+    soc_2010_onetsoc_code = models.CharField(max_length=32, blank=True, default="")
+    esco_code = models.CharField(max_length=32, blank=True, default="")
+    cities = models.JSONField(default=list, blank=True, help_text="City names, e.g. ['Addis Ababa'].")
+    raw_payload = models.JSONField(default=dict, blank=True)
+    # Same per-day numbering as the master ScrapedItem (01, 02, ...).
+    job_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-day sequential number, mirroring ScrapedItem.job_number.",
+    )
+    numbered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Local day this job was numbered on.",
+    )
+
+    class Meta:
+        ordering = ["-numbered_on", "job_number"]
+
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
+    @property
+    def cities_display(self) -> str:
+        """Comma-joined city names for admin lists, e.g. 'Addis Ababa'."""
+        return ", ".join(self.cities or [])
+
+    def __str__(self):
+        return f"{self.job_number_display} · {self.title}"
+
+
+class HaHuScrapeLog(TimeStampedModel):
+    """Per-website log for HaHuJobs — ONE record per (source, day).
+
+    Identical contract to ``AfriworkScrapeLog``: each scrape run that day
+    APPENDS its summary to ``scraped_log`` and bumps the day totals. The
+    master ``ScrapeLog`` references this row via its ``websites`` bucket
+    (``table`` + ``log_id``).
+    """
+
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="hahujobs_day_logs")
+    day = models.DateField(db_index=True, help_text="The local day this rollup covers.")
+    status = models.CharField(
+        max_length=16,
+        choices=ScrapeStatus.choices,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's runs.",
+    )
+    run_count = models.PositiveIntegerField(default=0, help_text="How many scrape runs happened this day.")
+    api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests made this day.")
+    items_found = models.PositiveIntegerField(default=0, help_text="Total items found this day.")
+    items_inserted = models.PositiveIntegerField(default=0)
+    items_updated = models.PositiveIntegerField(default=0)
+    items_skipped = models.PositiveIntegerField(default=0)
+    scraped_log = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="One summary entry per scrape run that day (grows as we scrape).",
+    )
+
+    class Meta:
+        ordering = ["-day"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "day"], name="uniq_hahujobs_daylog_src_day"),
+        ]
+
+    def last_run(self) -> dict | None:
+        """The most recent run entry for this site/day."""
+        return self.scraped_log[-1] if self.scraped_log else None
+
+    def __str__(self):
+        return f"HaHuJobs · {self.day} · {self.run_count} run(s) · {self.status}"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.
 # Append new website logs here as they are built (e.g. ``HaHuScrapeLog``)
 # and the master rollup picks them up automatically.
-SITE_LOG_MODELS = [AfriworkScrapeLog, EthioJobsScrapeLog]
+SITE_LOG_MODELS = [AfriworkScrapeLog, EthioJobsScrapeLog, HaHuScrapeLog]

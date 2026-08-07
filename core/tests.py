@@ -23,6 +23,8 @@ from core.models import (
     AfriworkScrapeLog,
     EthioJobsJob,
     EthioJobsScrapeLog,
+    HaHuJob,
+    HaHuScrapeLog,
     ScrapeLog,
     ScrapeStatus,
     ScrapedItem,
@@ -30,6 +32,7 @@ from core.models import (
 )
 from core.reporting import api_issues_for_day
 from core.scrapers.graphql import GraphQLScraper
+from core.scrapers.hahujobs import HaHuJobsScraper
 from core.scrapers.rest import RestJsonScraper
 from core.scrapers.base import transform_job_type_code
 from core.structures import (
@@ -179,6 +182,97 @@ ETHIOJOBS_SAMPLE_PATHS = [
     "state",
     "title",
     "type",
+]
+
+# A faithful sample of ONE HaHuJobs job object (a subset of the live capture —
+# the flattened paths must stay inside hahujobs.json). HaHuJobs is an
+# aggregator: ``source`` names the upstream website the listing came from
+# (hahujobs_telegram here; ethiojobs-sourced listings are skipped by the
+# scraper because EthioJobs is scraped directly).
+HAHUJOBS_SAMPLE = {
+    "id": "6a60ab445b67c401472a0734",
+    "title": "Social Media Sales Representative",
+    "total_web_view_count": 127,
+    "telegram_view_count": 9070,
+    "total_view_count": 9197,
+    "type": "full_time",
+    "max_years_of_experience": None,
+    "years_of_experience": 2,
+    "summary": "TVET Level IV or Bachelor's Degree in Marketing with relevant work experience",
+    "salary": None,
+    "deadline": "2026-08-08T00:00:00+00:00",
+    "expired": False,
+    "location": None,
+    "source": "hahujobs_telegram",
+    "application_method": "link",
+    "application_url": "https://t.me/Dayotgb",
+    "application_email": "",
+    "number_of_applicants": 1,
+    "approved_on": "2026-07-22T12:50:48.27093+00:00",
+    "job_cities": [
+        {"city": {"name": "Addis Ababa", "region": {"name": "Addis Ababa", "id": "X1dBPES-3TX_YrKPG51jX"}}}
+    ],
+    "entity": {"logo": None, "name": "Dayot General Business Plc", "id": "aL6T2Ksal9l1Cz1"},
+    "sub_sector": {
+        "name": "Business Sales and Marketing",
+        "sector": {
+            "name": "Business",
+            "id": "QuF5r_hhUgdYBqID2vfLM",
+            "icon_class": "business-time",
+            "icon_code": "f64a",
+        },
+    },
+    "area": None,
+    "isco_08": {
+        "isco_08_code": "3322",
+        "title_en": "Commercial Sales Representatives",
+        "title_am": "የገበያ ሽያጭ ወኪሎች",
+    },
+    "soc_2010": {
+        "title": "Sales Representatives, Wholesale and Manufacturing, Except Technical and Scientific Products",
+        "onetsoc_code": "41-4012.00",
+    },
+    "esco_code": "3322.1",
+}
+
+HAHUJOBS_SAMPLE_PATHS = [
+    "application_email",
+    "application_method",
+    "application_url",
+    "approved_on",
+    "area",
+    "deadline",
+    "entity.id",
+    "entity.logo",
+    "entity.name",
+    "esco_code",
+    "expired",
+    "id",
+    "isco_08.isco_08_code",
+    "isco_08.title_am",
+    "isco_08.title_en",
+    "job_cities.city.name",
+    "job_cities.city.region.id",
+    "job_cities.city.region.name",
+    "location",
+    "max_years_of_experience",
+    "number_of_applicants",
+    "salary",
+    "soc_2010.onetsoc_code",
+    "soc_2010.title",
+    "source",
+    "sub_sector.name",
+    "sub_sector.sector.icon_class",
+    "sub_sector.sector.icon_code",
+    "sub_sector.sector.id",
+    "sub_sector.sector.name",
+    "summary",
+    "telegram_view_count",
+    "title",
+    "total_view_count",
+    "total_web_view_count",
+    "type",
+    "years_of_experience",
 ]
 
 AFRIWORK_SAMPLE_PATHS = [
@@ -408,6 +502,138 @@ class RestScraperTests(TestCase):
         self.assertEqual(bucket["table"], "EthioJobsScrapeLog")
         self.assertEqual(bucket["log_id"], log_id)
         self.assertEqual(bucket["status"], "success")
+
+
+class HaHuJobsScraperTests(TestCase):
+    """The HaHuJobs aggregator scraper: structure, detail row, ethiojobs skip, site log."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="hahujobs",
+            name="HaHu Jobs",
+            endpoint="https://graph.aggregator.hahu.jobs/v1/graphql",
+            scraper_type="graphql",
+            only_today=True,
+            field_mapping={
+                "external_id": "id",
+                "title": "title",
+                "description": {"path": "summary", "transforms": ["strip_html"]},
+                "company": "entity.name",
+                "salary": "salary",
+                "job_type": {"path": "type", "transforms": ["upper"]},
+                "published_at": {"path": "approved_on", "transforms": ["parse_datetime"]},
+                "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+            },
+            pagination={
+                "page_size": 20,
+                "results_path": "data.jobs",
+                "date_filter": {"field": "approved_on", "from_var": "from", "to_var": "to"},
+                "max_pages": 50,
+            },
+        )
+        self.scraper = HaHuJobsScraper(self.source)
+
+    def test_extract_structure_matches_hahujobs_sample(self):
+        self.assertEqual(extract_structure(HAHUJOBS_SAMPLE), HAHUJOBS_SAMPLE_PATHS)
+
+    def test_hahujobs_snapshot_exists_and_contains_core_structure(self):
+        snapshot = load_structure("hahujobs")
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["source"], "hahujobs")
+        missing = set(HAHUJOBS_SAMPLE_PATHS) - set(snapshot["fields"])
+        self.assertFalse(missing, f"HaHuJobs snapshot is missing core fields: {sorted(missing)}")
+
+    def test_normalize_derives_location_and_coerces_salary(self):
+        item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        # Location comes from the nested job_cities list (dotted paths can't
+        # reach it), and the lowercase type is uppercased to the shared enum.
+        self.assertEqual(item["location"], "Addis Ababa")
+        self.assertEqual(item["job_type"], "FULL_TIME")
+        self.assertEqual(item["url"], "https://www.hahu.jobs/jobs/6a60ab445b67c401472a0734")
+        self.assertIsNone(item.get("salary"))  # None salary stays None
+        with_salary = dict(HAHUJOBS_SAMPLE)
+        with_salary["salary"] = 80000
+        self.assertEqual(self.scraper.normalize(with_salary)["salary"], "80000")
+
+    def test_save_detail_persists_everything_and_links_master(self):
+        item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        item["raw_data"] = HAHUJOBS_SAMPLE
+        master_item = ScrapedItem.objects.create(
+            source=self.source,
+            external_id=item["external_id"],
+            title=item["title"],
+            job_number=1,
+            numbered_on=timezone.localdate(),
+        )
+        self.scraper._save_detail(item, master_item)
+        detail = HaHuJob.objects.get(external_id=item["external_id"])
+        self.assertEqual(detail.entity_name, "Dayot General Business Plc")
+        self.assertEqual(detail.type, "FULL_TIME")
+        self.assertEqual(detail.cities, ["Addis Ababa"])
+        self.assertEqual(detail.source, "hahujobs_telegram")
+        self.assertEqual(detail.application_url, "https://t.me/Dayotgb")
+        self.assertEqual(detail.job_number, 1)
+        master_item.refresh_from_db()
+        self.assertEqual(master_item.hahujobs_job_id, detail.pk)
+
+    def test_save_items_skips_ethiojobs_sourced(self):
+        ethiojobs_item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        ethiojobs_item["external_id"] = "ethiojobs-1"
+        ethiojobs_item["raw_data"] = {**HAHUJOBS_SAMPLE, "source": "ethiojobs"}
+
+        telegram_item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        telegram_item["external_id"] = "telegram-1"
+        telegram_item["raw_data"] = HAHUJOBS_SAMPLE
+
+        inserted, updated, skipped, errors = self.scraper.save_items(
+            [ethiojobs_item, telegram_item]
+        )
+        self.assertEqual(inserted, 1)
+        self.assertEqual(updated, 0)
+        self.assertEqual(skipped, 1)
+        self.assertEqual(errors, [])
+        self.assertFalse(ScrapedItem.objects.filter(external_id="ethiojobs-1").exists())
+        self.assertTrue(ScrapedItem.objects.filter(external_id="telegram-1").exists())
+        self.assertEqual(HaHuJob.objects.count(), 1)
+
+    def test_generic_record_detail_log_writes_hahujobs_site_log(self):
+        run = make_run(api_hits=2, found=3)
+        log_id = self.scraper.record_detail_log(run, timezone.localdate())
+        self.assertIsNotNone(log_id)
+        site_log = HaHuScrapeLog.objects.get()
+        self.assertEqual(len(site_log.scraped_log), 1)
+        self.assertEqual(site_log.api_hits, 2)
+        # The master bucket references the right table.
+        master = self.scraper._update_master_day_log(run, timezone.localdate(), log_id)
+        bucket = master.website("hahujobs")
+        self.assertEqual(bucket["table"], "HaHuScrapeLog")
+        self.assertEqual(bucket["log_id"], log_id)
+        self.assertEqual(bucket["status"], "success")
+
+    def test_sweep_continues_past_all_ethiojobs_page(self):
+        # The reason the ethiojobs filter lives in save_items (not
+        # _keep_item): a page made entirely of ethiojobs listings must NOT
+        # look like an empty page and truncate the sweep. Page 0 is all
+        # ethiojobs; the sweep must still reach page 1's real listing.
+        ethiojobs_item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        ethiojobs_item["external_id"] = "ethiojobs-1"
+        ethiojobs_item["raw_data"] = {**HAHUJOBS_SAMPLE, "source": "ethiojobs"}
+
+        telegram_item = self.scraper.normalize(HAHUJOBS_SAMPLE)
+        telegram_item["external_id"] = "telegram-1"
+        telegram_item["raw_data"] = HAHUJOBS_SAMPLE
+
+        pages = [
+            ([ethiojobs_item], 200),  # page 0: all ethiojobs — keep sweeping
+            ([telegram_item], 200),   # page 1: the real listing
+            ([], 200),                # page 2: genuinely empty — stop here
+        ]
+        with mock.patch.object(self.scraper, "_page_items", side_effect=pages):
+            self.scraper.scrape_many()
+
+        self.assertTrue(ScrapedItem.objects.filter(external_id="telegram-1").exists())
+        self.assertFalse(ScrapedItem.objects.filter(external_id="ethiojobs-1").exists())
+        self.assertEqual(HaHuJob.objects.count(), 1)
 
 
 class ApiIssueTests(TestCase):

@@ -1,4 +1,8 @@
-"""GraphQL (Hasura) scraper — used for Afriwork and HaHu Jobs.
+"""GraphQL (Hasura) scraper — used for Afriwork.
+
+HaHuJobs is a second GraphQL site; it reuses this pipeline from its own
+module (``core/scrapers/hahujobs.py``) and is dispatched by slug in the
+ScraperFactory. This module stays Afriwork-specific for the detail row.
 
 Fetches one page via POST with ``query`` + variables, then extracts the
 results list at the configured ``results_path`` (e.g. ``data.jobs``).

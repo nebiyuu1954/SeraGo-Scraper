@@ -20,6 +20,8 @@ from core.models import (
     AfriworkScrapeLog,
     EthioJobsJob,
     EthioJobsScrapeLog,
+    HaHuJob,
+    HaHuScrapeLog,
     ScrapeLog,
     ScrapedItem,
 )
@@ -32,6 +34,8 @@ DATA_MODELS = [
     AfriworkScrapeLog,
     EthioJobsJob,
     EthioJobsScrapeLog,
+    HaHuJob,
+    HaHuScrapeLog,
 ]
 
 
