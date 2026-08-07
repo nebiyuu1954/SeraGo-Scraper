@@ -7,16 +7,56 @@ from django.core.management.base import BaseCommand
 from core.models import ScraperType, Source
 
 AFRIWORK_QUERY = """
-query GetJobs($limit: Int, $offset: Int) {
-  jobs(limit: $limit, offset: $offset) {
+query GetJobs($limit: Int, $offset: Int, $from: timestamptz, $to: timestamptz) {
+  jobs(
+    limit: $limit
+    offset: $offset
+    # Today's listings = newly published today OR refreshed (reposted) today.
+    where: {
+      _or: [
+        {published_at: {_gte: $from, _lt: $to}}
+        {refreshed_at: {_gte: $from, _lt: $to}}
+      ]
+    }
+    order_by: {published_at: desc}
+  ) {
     id
     title
-    description
-    location
-    job_type
-    published_at
     created_at
+    updated_at
+    published_at
+    refreshed_at
+    approval_status
+    description
+    job_type
+    job_site
+    skill_requirements {
+      skill {
+        name
+        id
+      }
+    }
+    city {
+      name
+      country {
+        name
+      }
+    }
+    sectors {
+      sector {
+        name
+        id
+      }
+    }
     deadline
+    compensation_amount_cents
+    compensation_type
+    compensation_currency
+    experience_level
+    entity {
+      type
+      name
+    }
   }
 }
 """
@@ -30,7 +70,9 @@ AFRIWORK_FIELD_MAPPING = {
     "external_id": "id",
     "title": "title",
     "description": {"path": "description", "transforms": ["strip_html"]},
-    "location": {"path": "location", "transforms": ["clean_text"]},
+    # The API nests location under city.name and the employer under entity.name.
+    "company": "entity.name",
+    "location": {"path": "city.name", "transforms": ["clean_text"]},
     "job_type": {"path": "job_type", "transforms": ["upper"]},
     "published_at": {"path": "published_at", "transforms": ["parse_datetime"]},
     "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
@@ -41,6 +83,10 @@ AFRIWORK_PAGINATION = {
     "results_path": "data.jobs",
     # "limit"/"offset" GraphQL variables are injected automatically from
     # page + page_size; only add extra variables here if the API needs them.
+    # "date_filter" lets the GraphQLScraper inject today's local-day window
+    # into the $from/$to variables when Source.only_today is enabled.
+    "date_filter": {"field": "published_at", "from_var": "from", "to_var": "to"},
+    "max_pages": 50,
 }
 
 

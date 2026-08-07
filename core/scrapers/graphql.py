@@ -2,12 +2,22 @@
 
 Fetches one page via POST with ``query`` + variables, then extracts the
 results list at the configured ``results_path`` (e.g. ``data.jobs``).
+
+When ``only_today`` is enabled and the pagination rules declare a
+``date_filter`` (field + from/to variable names), the request variables get
+``from``/``to`` bounds covering the current local day, so the server only
+returns today's listings.
 """
 from __future__ import annotations
 
-import httpx
+from datetime import date, datetime, time as dtime, timedelta
 
-from .base import BaseScraper, ScrapeError, dig
+import httpx
+from django.utils import timezone
+
+from core.models import AfriworkJob, AfriworkScrapeLog, ScrapedItem
+
+from .base import BaseScraper, ScrapeError, dig, transform_parse_datetime
 
 DEFAULT_PAGE_SIZE = 10
 DEFAULT_TIMEOUT = 30.0
@@ -16,6 +26,13 @@ DEFAULT_TIMEOUT = 30.0
 class GraphQLScraper(BaseScraper):
     """Paged POST/JSON scraper for Hasura GraphQL endpoints."""
 
+    def _today_range(self) -> tuple[datetime, datetime]:
+        """Today's local-day window as aware datetimes: [00:00, tomorrow 00:00)."""
+        today = timezone.localdate()
+        tz = timezone.get_current_timezone()
+        start = datetime.combine(today, dtime.min, tzinfo=tz)
+        return start, start + timedelta(days=1)
+
     def _build_payload(self, page: int) -> dict:
         """Build the POST body for a given 0-based page.
 
@@ -23,6 +40,10 @@ class GraphQLScraper(BaseScraper):
         runs advance correctly; any static values in ``pagination.variables``
         are ignored for these keys. Custom variable names can be configured
         via ``limit_var``/``offset_var`` in the pagination rules.
+
+        When a ``date_filter`` is configured, ``from``/``to`` are always
+        injected (the query requires them): today's local-day window when
+        ``only_today`` is on, a wide 2000–2100 window when it's off.
         """
         pagination = self.source.pagination or {}
         page_size = int(pagination.get("page_size", DEFAULT_PAGE_SIZE))
@@ -31,6 +52,17 @@ class GraphQLScraper(BaseScraper):
         variables = dict(pagination.get("variables") or {})
         variables[pagination.get("limit_var", "limit")] = page_size
         variables[pagination.get("offset_var", "offset")] = offset
+
+        date_filter = pagination.get("date_filter")
+        if isinstance(date_filter, dict) and date_filter.get("field"):
+            tz = timezone.get_current_timezone()
+            if self.only_today:
+                date_from, date_to = self._today_range()
+            else:
+                date_from = datetime(2000, 1, 1, tzinfo=tz)
+                date_to = datetime(2100, 1, 1, tzinfo=tz)
+            variables[date_filter.get("from_var", "from")] = date_from.isoformat()
+            variables[date_filter.get("to_var", "to")] = date_to.isoformat()
         return {"query": self.source.query, "variables": variables}
 
     def fetch(self, page: int = 0) -> dict:
@@ -43,8 +75,95 @@ class GraphQLScraper(BaseScraper):
             headers=headers,
             timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
         )
+        # Record the request even when it fails — it still hit the API.
+        self._record_api_call(page, response.status_code)
         response.raise_for_status()
         return response.json()
+
+    _NESTED_LIST_NODE = {"skill_requirements": "skill", "sectors": "sector"}
+
+    @classmethod
+    def _nested_names(cls, raw: dict, key: str) -> list[str]:
+        """Extract names from Afriwork's nested lists, e.g. skill_requirements/sectors.
+
+        ``[{"skill": {"name": "Canva", "id": "..."}}]`` -> ``["Canva"]``.
+        """
+        names = []
+        for entry in raw.get(key) or []:
+            if not isinstance(entry, dict):
+                continue
+            node = entry.get(cls._NESTED_LIST_NODE.get(key, "") or "")
+            if isinstance(node, dict) and node.get("name"):
+                names.append(node["name"])
+        return names
+
+    def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
+        """Create/update the AfriworkJob detail row and link it to the master.
+
+        Persists EVERY field the Afriwork API returns for a listing, so the
+        per-site model is a faithful mirror of the raw response (the raw JSON
+        is also kept verbatim in ``raw_payload``).
+        """
+        raw = item.get("raw_data") or {}
+        city = raw.get("city") or {}
+        country = (city.get("country") or {}).get("name") or ""
+        entity = raw.get("entity") or {}
+
+        afriwork, _ = AfriworkJob.objects.update_or_create(
+            external_id=instance.external_id,
+            defaults={
+                "title": raw.get("title") or item.get("title") or "",
+                "description": item.get("description") or "",
+                "location": item.get("location") or city.get("name") or "",
+                "country": country,
+                "job_type": item.get("job_type") or "",
+                "job_site": raw.get("job_site") or "",
+                "experience_level": raw.get("experience_level") or "",
+                "approval_status": raw.get("approval_status") or "",
+                "published_at": item.get("published_at"),
+                "deadline": item.get("deadline"),
+                "api_created_at": transform_parse_datetime(raw.get("created_at")),
+                "api_updated_at": transform_parse_datetime(raw.get("updated_at")),
+                "refreshed_at": transform_parse_datetime(raw.get("refreshed_at")),
+                "entity_type": entity.get("type") or "",
+                "entity_name": entity.get("name") or "",
+                "skills": self._nested_names(raw, "skill_requirements"),
+                "sectors": self._nested_names(raw, "sectors"),
+                "compensation_amount_cents": raw.get("compensation_amount_cents"),
+                "compensation_type": raw.get("compensation_type") or "",
+                "compensation_currency": raw.get("compensation_currency") or "",
+                "raw_payload": raw,
+                "job_number": instance.job_number,
+                "numbered_on": instance.numbered_on,
+            },
+        )
+        if instance.afriwork_job_id != afriwork.pk:
+            ScrapedItem.objects.filter(pk=instance.pk).update(afriwork_job=afriwork)
+
+    def record_detail_log(self, run: dict, day: date) -> str | None:
+        """Append this run to the AfriworkScrapeLog day log; return its pk.
+
+        ONE record per (source, day): each run appends its summary to
+        ``scraped_log`` and bumps the day totals (api_hits, items_*, worst
+        status). The returned pk is stored on the master log's ``websites``
+        bucket as ``log_id`` so the master references this site log.
+        Failures are handled by the caller (BaseScraper._close).
+        """
+        day_log, _ = AfriworkScrapeLog.objects.get_or_create(
+            source=self.source,
+            day=day,
+        )
+        entry = self._run_summary(run)
+        day_log.scraped_log.append(entry)
+        day_log.run_count += 1
+        day_log.api_hits += run.get("api_hits", 0)
+        day_log.items_found += run.get("items_found", 0)
+        day_log.items_inserted += run.get("items_inserted", 0)
+        day_log.items_updated += run.get("items_updated", 0)
+        day_log.items_skipped += run.get("items_skipped", 0)
+        day_log.status = self._worst_status(day_log.status, run.get("status"))
+        day_log.save()
+        return str(day_log.pk)
 
     def parse(self, raw: dict) -> list[dict]:
         # Hasura reports GraphQL errors in the body with HTTP 200 — surface them.

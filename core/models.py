@@ -1,7 +1,15 @@
-"""Core models for SeraGo: Source, ScrapedItem and ScrapeLog.
+"""Core models for SeraGo: Source, ScrapedItem and the two log levels.
 
 These tables are the contract shared with the .NET backend via PostgreSQL:
 sources, scraped_items, scrape_logs (health_results comes with the Celery step).
+
+Logs come in exactly two levels:
+* ``ScrapeLog`` — the MASTER log: ONE record per day with the day's overall
+  totals and a compact ``websites`` JSON (short numbers per website plus a
+  reference to each website's own log).
+* ``AfriworkScrapeLog`` — the per-website log: ONE record per (site, day)
+  with every scrape run that day inside its ``scraped_log`` JSON — the full
+  detail (pages hit, http statuses, errors) you drill into from the master.
 """
 import uuid
 
@@ -87,6 +95,14 @@ class Source(TimeStampedModel):
     )
     scrape_interval_hours = models.PositiveIntegerField(default=24)
     is_active = models.BooleanField(default=True)
+    only_today = models.BooleanField(
+        default=True,
+        help_text=(
+            "Only scrape listings dated today (published or refreshed today). "
+            "Requires a 'date_filter' key in pagination rules (field + "
+            "from_var/to_var names); the query decides how the bounds apply."
+        ),
+    )
     last_scraped_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
 
@@ -123,45 +139,229 @@ class ScrapedItem(TimeStampedModel):
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True, help_text="False once the listing disappears from the source.")
+    # Per-day sequential numbering: resets to 01 for each (source, day).
+    # #01 is the first job posted that day (sorted by published time); new
+    # jobs found later in the day are appended with the next number.
+    job_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-day sequential number (01, 02, ...), resetting each day.",
+    )
+    numbered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Local day this item was numbered on.",
+    )
+    # Per-site detail record (one per site, e.g. AfriworkJob) — isolates
+    # site-specific data while ScrapedItem stays the universal contract.
+    afriwork_job = models.OneToOneField(
+        "AfriworkJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scraped_item_master",
+        help_text="Afriwork-specific detail row for this listing.",
+    )
 
     class Meta:
-        ordering = ["-published_at"]
+        ordering = ["-numbered_on", "job_number"]
         constraints = [
             models.UniqueConstraint(fields=["source", "external_id"], name="uniq_source_external_id"),
+            models.UniqueConstraint(
+                fields=["source", "numbered_on", "job_number"],
+                name="uniq_source_day_job_number",
+            ),
         ]
         indexes = [
             models.Index(fields=["source", "is_active"], name="item_src_active_idx"),
         ]
 
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
     def __str__(self):
-        return self.title
+        return f"{self.job_number_display} · {self.title}"
 
 
 class ScrapeLog(TimeStampedModel):
-    """Audit trail for one scrape run of one source (status, counts, errors)."""
+    """MASTER log — ONE record per day referencing every website's logs.
 
-    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="logs")
+    This is the single place that aggregates all websites for the day:
+
+    * ``websites`` — ONE compact JSON: a short bucket per website
+      ({source, name, table, log_id, status, run_count, api_hits, items_*}).
+      ``table`` + ``log_id`` reference that website's own log (e.g. the
+      AfriworkScrapeLog row) so you can jump straight to its full detail.
+    * Row-level ``api_hits``/``items_*`` — the day's totals across all
+      websites, plus ``websites_count`` (how many websites have logs).
+
+    ``status`` is the WORST status across the day's runs; each website's
+    worst status also sits in its bucket, so a failing website stands out
+    and you can open its own log to see exactly which API call failed.
+    """
+
+    day = models.DateField(unique=True, help_text="The local day this master log covers.")
     status = models.CharField(
         max_length=16,
         choices=ScrapeStatus.choices,
-        default=ScrapeStatus.RUNNING,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's runs.",
     )
-    page = models.PositiveIntegerField(default=0, help_text="0-based page/offset index.")
+    run_count = models.PositiveIntegerField(default=0, help_text="Total scrape runs across all websites this day.")
+    api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests across all websites this day.")
     items_found = models.PositiveIntegerField(default=0)
     items_inserted = models.PositiveIntegerField(default=0)
     items_updated = models.PositiveIntegerField(default=0)
     items_skipped = models.PositiveIntegerField(default=0)
-    errors = models.JSONField(default=list, blank=True)
-    message = models.TextField(blank=True, default="")
-    started_at = models.DateTimeField(auto_now_add=True)
-    finished_at = models.DateTimeField(null=True, blank=True)
-    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    websites = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Short per-website buckets: [{'source', 'name', 'table', "
+            "'log_id', 'status', 'run_count', 'api_hits', 'items_*'}]. "
+            "table + log_id reference the site's own log (e.g. "
+            "AfriworkScrapeLog pk) where the full run detail lives."
+        ),
+    )
 
     class Meta:
-        ordering = ["-started_at"]
-        indexes = [
-            models.Index(fields=["source", "-started_at"], name="log_src_started_idx"),
-        ]
+        ordering = ["-day"]
+
+    @property
+    def websites_count(self) -> int:
+        """How many websites have logs recorded for this day."""
+        return len(self.websites or [])
+
+    def website(self, source_slug: str) -> dict | None:
+        """The per-website bucket for a source slug, if present."""
+        return next((w for w in self.websites if w.get("source") == source_slug), None)
 
     def __str__(self):
-        return f"{self.source} · {self.status} · {self.started_at:%Y-%m-%d %H:%M}"
+        return f"Master · {self.day} · {self.run_count} run(s) · {self.status}"
+
+
+class AfriworkJob(TimeStampedModel):
+    """Afriwork-specific job details (per-site model, isolated per website).
+
+    Holds the fields Afriwork's GraphQL API returns, so site-specific data
+    never pollutes the universal ScrapedItem contract. Linked from
+    ``ScrapedItem.afriwork_job``. Other websites get their own model later
+    (e.g. HaHuJob), following the same master + per-site pattern.
+    """
+
+    external_id = models.CharField(max_length=255, unique=True)
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, default="")
+    location = models.CharField(max_length=255, blank=True, default="", help_text="City name (from city.name).")
+    country = models.CharField(max_length=255, blank=True, default="", help_text="Country name (from city.country.name).")
+    job_type = models.CharField(max_length=32, choices=JobType.choices, blank=True, default="")
+    job_site = models.CharField(max_length=32, blank=True, default="", help_text="ONSITE / REMOTE / HYBRID.")
+    experience_level = models.CharField(max_length=32, blank=True, default="", help_text="ENTRY / JUNIOR / SENIOR / ...")
+    approval_status = models.CharField(max_length=32, blank=True, default="", help_text="PUBLISHED / REFRESHED / ...")
+    published_at = models.DateTimeField(null=True, blank=True)
+    api_created_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="The API's own created_at timestamp.",
+    )
+    api_updated_at = models.DateTimeField(null=True, blank=True, help_text="The API's own updated_at timestamp.")
+    refreshed_at = models.DateTimeField(null=True, blank=True)
+    deadline = models.DateTimeField(null=True, blank=True)
+    entity_type = models.CharField(max_length=32, blank=True, default="", help_text="company / private_client / ...")
+    entity_name = models.CharField(max_length=255, blank=True, default="", help_text="The posting company/client name.")
+    skills = models.JSONField(default=list, blank=True, help_text="Skill names, e.g. ['Canva', 'Adobe Illustrator'].")
+    sectors = models.JSONField(default=list, blank=True, help_text="Sector names, e.g. ['Marketing'].")
+    compensation_amount_cents = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="Compensation in cents (ETB) when the API provides it.",
+    )
+    compensation_type = models.CharField(max_length=32, blank=True, default="", help_text="MONTHLY / FIXED / ...")
+    compensation_currency = models.CharField(max_length=16, blank=True, default="", help_text="ETB / USD / ...")
+    raw_payload = models.JSONField(default=dict, blank=True)
+    # Same per-day numbering as the master ScrapedItem (01, 02, ...).
+    job_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-day sequential number, mirroring ScrapedItem.job_number.",
+    )
+    numbered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Local day this job was numbered on.",
+    )
+
+    class Meta:
+        ordering = ["-numbered_on", "job_number"]
+
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
+    def __str__(self):
+        return f"{self.job_number_display} · {self.title}"
+
+
+class AfriworkScrapeLog(TimeStampedModel):
+    """Per-website log for Afriwork — ONE record per (source, day).
+
+    Each scrape run that day APPENDS its summary to the ``scraped_log``
+    JSON list and bumps the day totals, so a full day of scraping is
+    readable and debuggable in a single row. The master ``ScrapeLog``
+    references this row via its ``websites`` bucket (``log_id``).
+
+    Example ``scraped_log`` entry (one per run that day)::
+
+        {
+            "status": "success", "page": 0,
+            "items_found": 10, "items_inserted": 10,
+            "items_updated": 0, "items_skipped": 0,
+            "errors": [], "message": "",
+            "started_at": "...", "finished_at": "...", "duration_ms": 1234,
+            "api_hits": 4, "pages_hit": [{"page": 0, "http_status": 200, "found": 10}],
+        }
+    """
+
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="afriwork_day_logs")
+    day = models.DateField(db_index=True, help_text="The local day this rollup covers.")
+    status = models.CharField(
+        max_length=16,
+        choices=ScrapeStatus.choices,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's runs.",
+    )
+    run_count = models.PositiveIntegerField(default=0, help_text="How many scrape runs happened this day.")
+    api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests made this day.")
+    items_found = models.PositiveIntegerField(default=0, help_text="Total items found this day.")
+    items_inserted = models.PositiveIntegerField(default=0)
+    items_updated = models.PositiveIntegerField(default=0)
+    items_skipped = models.PositiveIntegerField(default=0)
+    scraped_log = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="One summary entry per scrape run that day (grows as we scrape).",
+    )
+
+    class Meta:
+        ordering = ["-day"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "day"], name="uniq_afriwork_daylog_src_day"),
+        ]
+
+    def last_run(self) -> dict | None:
+        """The most recent run entry for this site/day."""
+        return self.scraped_log[-1] if self.scraped_log else None
+
+    def __str__(self):
+        return f"Afriwork · {self.day} · {self.run_count} run(s) · {self.status}"
+
+
+# Registry of per-website log models (ONE record per source+day each). The
+# master ``ScrapeLog`` references each website's own log row (``table`` +
+# ``log_id``) so you can drill from the summary into the full detail.
+# Append new website logs here as they are built (e.g. ``HaHuScrapeLog``)
+# and the master rollup picks them up automatically.
+SITE_LOG_MODELS = [AfriworkScrapeLog]
