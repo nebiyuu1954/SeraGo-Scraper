@@ -234,6 +234,50 @@ HAHUJOBS_PAGINATION = {
     "max_pages": 50,
 }
 
+# GeezJobs — server-side HTML: https://geezjobs.com/search-jobs (paginated
+# with ?page=N, ~15 cards per page, newest first). There is no JSON API; the
+# GeezJobsScraper (core/scrapers/geezjobs.py) extracts the .opportunity-card
+# divs. The site embeds a honeypot (.trap-field) for bots — the scraper only
+# sends GETs and never submits forms. Cards only show relative 'Posted: X
+# ago' timestamps, so published_at is ESTIMATED (now − offset) and the
+# HtmlScraper stops the sweep client-side once a page has no items posted
+# today (date_filter without from/to vars — same semantics as EthioJobs).
+GEEZJOBS_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    ),
+}
+
+GEEZJOBS_FIELD_MAPPING = {
+    "external_id": "slug",
+    "title": "title",
+    "company": "company",
+    "location": "location",
+    # The card splits employment into time + type; the master job_type gets
+    # the time-based value (the only one the shared JobType enum covers). The
+    # raw type (permanent/contract/...) is stored on the GeezJob detail row.
+    "job_type": {"path": "job_time", "transforms": ["upper"]},
+    "url": "url",
+    "published_at": {"path": "published_at", "transforms": ["parse_datetime"]},
+    "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+}
+
+GEEZJOBS_PAGINATION = {
+    "page_size": 15,
+    # ?page=N from page 2 onward (page 1 is the bare /search-jobs URL).
+    "page_1_based": True,
+    "page_key": "page",
+    # No from/to vars: the HTML feed can't be filtered by date server-side, so
+    # the HtmlScraper drops pre-today items and ends the sweep once a page has
+    # no items posted today (estimated from the relative posted-ago chips).
+    "date_filter": {"field": "published_at"},
+    "max_pages": 20,
+    "timeout": 30.0,
+}
+
 
 class Command(BaseCommand):
     help = "Create or update the built-in source configurations (idempotent)."
@@ -294,4 +338,23 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {hahujobs}")
+        )
+
+        geezjobs_defaults = {
+            "name": "GeezJobs",
+            "base_url": "https://geezjobs.com",
+            "scraper_type": ScraperType.HTML,
+            "endpoint": "https://geezjobs.com/search-jobs",
+            "headers": GEEZJOBS_HEADERS,
+            "query": "",
+            "field_mapping": GEEZJOBS_FIELD_MAPPING,
+            "pagination": GEEZJOBS_PAGINATION,
+            "scrape_interval_hours": 24,
+            "is_active": True,
+        }
+        geezjobs, created = Source.objects.update_or_create(
+            slug="geezjobs", defaults=geezjobs_defaults
+        )
+        self.stdout.write(
+            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {geezjobs}")
         )

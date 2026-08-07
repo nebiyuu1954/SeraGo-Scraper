@@ -1,17 +1,21 @@
 """ScraperFactory — maps a Source to a scraper class.
 
-Dispatch happens on the source's ``scraper_type`` (graphql / rest / ...),
-with a per-slug override registry for websites that share a scraper_type
-but need their own site-specific detail saving (e.g. HaHuJobs reuses the
-GraphQL pipeline but writes its own HaHuJob detail rows + HaHuScrapeLog).
+Dispatch happens on the source's ``scraper_type`` (graphql / rest / html /
+...), with a per-slug override registry for websites that share a
+scraper_type but need their own site-specific detail saving (e.g. HaHuJobs
+reuses the GraphQL pipeline but writes its own HaHuJob detail rows +
+HaHuScrapeLog, and GeezJobs reuses the HTML pipeline with its own GeezJob
+rows + GeezScrapeLog).
 """
 from __future__ import annotations
 
 from core.models import ScraperType, Source
 
 from .base import BaseScraper
+from .geezjobs import GeezJobsScraper
 from .graphql import GraphQLScraper
 from .hahujobs import HaHuJobsScraper
+from .html import HtmlScraper
 from .rest import RestJsonScraper
 
 
@@ -21,13 +25,15 @@ class ScraperFactory:
     _registry: dict[str, type[BaseScraper]] = {
         ScraperType.GRAPHQL: GraphQLScraper,
         ScraperType.REST: RestJsonScraper,
+        ScraperType.HTML: HtmlScraper,
     }
 
     #: Per-slug overrides, checked before the scraper_type registry. A
-    #: second GraphQL site (or second REST site) with its own per-site
+    #: second GraphQL site (or second REST/HTML site) with its own per-site
     #: detail/log models registers its scraper class here.
     _slug_registry: dict[str, type[BaseScraper]] = {
         "hahujobs": HaHuJobsScraper,
+        "geezjobs": GeezJobsScraper,
     }
 
     @classmethod

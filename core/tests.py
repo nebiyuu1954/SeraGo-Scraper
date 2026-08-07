@@ -11,7 +11,7 @@ Covers the three things that matter when running several scrapers:
 import io
 import json
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +23,8 @@ from core.models import (
     AfriworkScrapeLog,
     EthioJobsJob,
     EthioJobsScrapeLog,
+    GeezJob,
+    GeezScrapeLog,
     HaHuJob,
     HaHuScrapeLog,
     ScrapeLog,
@@ -31,10 +33,12 @@ from core.models import (
     Source,
 )
 from core.reporting import api_issues_for_day
+from core.scrapers.base import ScrapeError, transform_job_type_code
+from core.scrapers.geezjobs import GeezJobsScraper
 from core.scrapers.graphql import GraphQLScraper
 from core.scrapers.hahujobs import HaHuJobsScraper
+from core.scrapers.html import HtmlScraper
 from core.scrapers.rest import RestJsonScraper
-from core.scrapers.base import transform_job_type_code
 from core.structures import (
     compare_structures,
     extract_structure,
@@ -299,6 +303,156 @@ AFRIWORK_SAMPLE_PATHS = [
     "skill_requirements.skill.name",
     "title",
     "updated_at",
+]
+
+# A faithful minimal listing page for GeezJobs (server-side HTML). It mirrors
+# the live /search-jobs markup: one .opportunity-card per listing, info rows
+# as `i[data-lucide=...]` + sibling span/a, the site's honeypot (.trap-field),
+# and the search-filter UI. Two cards: one posted today, one 3 days ago (the
+# client-side today filter must drop the old one and end the sweep on it).
+GEEZJOBS_SAMPLE_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Search jobs in Ethiopia</title></head>
+<body>
+  <div class="trap-field" aria-hidden="true">
+    <a href="/security/report-scraping" rel="nofollow">Bot Interface</a>
+    <input type="checkbox" name="is_bot" tabindex="-1" autocomplete="off">
+  </div>
+  <section class="bg-white pt-24 pb-6">
+    <div class="filter-group" data-filter-key="std">
+      <button type="button" class="filter-btn"><span class="label">Field of Study</span></button>
+    </div>
+    <form action="/search-jobs" method="GET" class="flex-grow"></form>
+  </section>
+  <section class="py-12">
+    <div class="opportunity-card group bg-white p-6 md:p-8 rounded-[2rem]">
+      <div class="grid grid-cols-[auto_1fr] gap-x-4">
+        <div class="w-16 h-16 rounded-2xl overflow-hidden">
+          <img src="/image/logo/4608638Dololo_Import.jpg" alt="Dololo Import And Export PLC Logo" class="w-full h-full object-contain">
+        </div>
+        <div class="pt-1">
+          <h3 class="text-lg md:text-xl font-black">
+            <a href="/job-detail/senior-finance-officer-dololo-import-and-export-plc">Senior Finance Officer</a>
+          </h3>
+          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div class="flex items-center gap-2">
+              <i data-lucide="building-2" class="w-3.5 h-3.5 text-slate-400"></i>
+              <a href="/company/dololo-import-and-export-plc" class="hover:text-brand-primary">Dololo Import And Export PLC</a>
+            </div>
+            <div class="flex items-center gap-2">
+              <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span>Addis Ababa                                                            - Ethiopia                                                        </span>
+            </div>
+            <div class="flex items-center gap-2 text-rose-500/80">
+              <i data-lucide="calendar-x" class="w-3.5 h-3.5"></i>
+              <span>Deadline: September 7, 2026</span>
+            </div>
+          </div>
+        </div>
+        <div class="col-span-2 mt-4 flex flex-col md:flex-row justify-between gap-6 border-t pt-4">
+          <div class="flex flex-wrap gap-2">
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="briefcase" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span class="text-[10px] md:text-xs font-bold">Full-time / Permanent</span>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="award" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span class="text-[10px] md:text-xs font-bold">4+ Years</span>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="calendar-plus" class="w-3.5 h-3.5 text-emerald-500/60"></i>
+              <span class="text-[10px] md:text-xs font-bold">Posted: 3 min ago</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opportunity-card group bg-white p-6 md:p-8 rounded-[2rem]">
+      <div class="grid grid-cols-[auto_1fr] gap-x-4">
+        <div class="w-16 h-16 rounded-2xl overflow-hidden">
+          <span class="text-2xl md:text-4xl font-black text-slate-400 uppercase select-none">4</span>
+        </div>
+        <div class="pt-1">
+          <h3 class="text-lg md:text-xl font-black">
+            <a href="/job-detail/office-engineer-4b-trading-plc">Office Engineer</a>
+          </h3>
+          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <div class="flex items-center gap-2">
+              <i data-lucide="building-2" class="w-3.5 h-3.5 text-slate-400"></i>
+              <a href="/company/4b-trading-plc" class="hover:text-brand-primary">4B Trading PLC</a>
+            </div>
+            <div class="flex items-center gap-2">
+              <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span>Sendafa - Ethiopia</span>
+            </div>
+            <div class="flex items-center gap-2 text-rose-500/80">
+              <i data-lucide="calendar-x" class="w-3.5 h-3.5"></i>
+              <span>Deadline: August 16, 2026</span>
+            </div>
+          </div>
+        </div>
+        <div class="col-span-2 mt-4 flex flex-col md:flex-row justify-between gap-6 border-t pt-4">
+          <div class="flex flex-wrap gap-2">
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="briefcase" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span class="text-[10px] md:text-xs font-bold">Full-time / Permanent</span>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="award" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span class="text-[10px] md:text-xs font-bold">3/5+ Years</span>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-xl">
+              <i data-lucide="calendar-plus" class="w-3.5 h-3.5 text-emerald-500/60"></i>
+              <span class="text-[10px] md:text-xs font-bold">Posted: 3 days ago</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</body></html>
+"""
+
+# The raw card dict GeezJobsScraper.parse() produces for the FIRST card above.
+# published_at is estimated from the 'Posted: X ago' chip, so tests assert on
+# the stable fields and check the timestamp separately.
+GEEZJOBS_SAMPLE = {
+    "title": "Senior Finance Officer",
+    "slug": "senior-finance-officer-dololo-import-and-export-plc",
+    "url": "https://geezjobs.com/job-detail/senior-finance-officer-dololo-import-and-export-plc",
+    "company": "Dololo Import And Export PLC",
+    "location": "Addis Ababa",
+    "country": "Ethiopia",
+    "logo": "https://geezjobs.com/image/logo/4608638Dololo_Import.jpg",
+    "employment_text": "Full-time / Permanent",
+    "job_time": "full_time",
+    "job_type": "permanent",
+    "experience_text": "4+ Years",
+    "min_experience_years": 4,
+    "max_experience_years": None,
+    "posted_text": "Posted: 3 min ago",
+    "published_at": "2026-08-07T11:00:00+03:00",
+    "deadline_text": "Deadline: September 7, 2026",
+    "deadline": "2026-09-07T00:00:00+03:00",
+}
+
+GEEZJOBS_SAMPLE_PATHS = [
+    "company",
+    "country",
+    "deadline",
+    "deadline_text",
+    "employment_text",
+    "experience_text",
+    "job_time",
+    "job_type",
+    "location",
+    "logo",
+    "max_experience_years",
+    "min_experience_years",
+    "posted_text",
+    "published_at",
+    "slug",
+    "title",
+    "url",
 ]
 
 
@@ -634,6 +788,262 @@ class HaHuJobsScraperTests(TestCase):
         self.assertTrue(ScrapedItem.objects.filter(external_id="telegram-1").exists())
         self.assertFalse(ScrapedItem.objects.filter(external_id="ethiojobs-1").exists())
         self.assertEqual(HaHuJob.objects.count(), 1)
+
+
+class GeezJobsScraperTests(TestCase):
+    """The GeezJobs HTML scraper: card parsing, today filter, detail row, site log."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="geezjobs",
+            name="GeezJobs",
+            base_url="https://geezjobs.com",
+            endpoint="https://geezjobs.com/search-jobs",
+            scraper_type="html",
+            only_today=True,
+            field_mapping={
+                "external_id": "slug",
+                "title": "title",
+                "company": "company",
+                "location": "location",
+                "job_type": {"path": "job_time", "transforms": ["upper"]},
+                "url": "url",
+                "published_at": {"path": "published_at", "transforms": ["parse_datetime"]},
+                "deadline": {"path": "deadline", "transforms": ["parse_datetime"]},
+            },
+            pagination={
+                "page_size": 15,
+                "page_1_based": True,
+                "page_key": "page",
+                "date_filter": {"field": "published_at"},
+                "max_pages": 20,
+            },
+        )
+        self.scraper = GeezJobsScraper(self.source)
+
+    def test_extract_structure_matches_geezjobs_sample(self):
+        self.assertEqual(extract_structure(GEEZJOBS_SAMPLE), GEEZJOBS_SAMPLE_PATHS)
+
+    def test_geezjobs_snapshot_exists_and_contains_core_structure(self):
+        snapshot = load_structure("geezjobs")
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["source"], "geezjobs")
+        missing = set(GEEZJOBS_SAMPLE_PATHS) - set(snapshot["fields"])
+        self.assertFalse(missing, f"GeezJobs snapshot is missing core fields: {sorted(missing)}")
+
+    def test_page_url_omits_param_on_page_1(self):
+        # Page 1 is the bare /search-jobs URL; ?page=N starts at page 2.
+        self.assertEqual(self.scraper._page_url(0), "https://geezjobs.com/search-jobs")
+        self.assertEqual(self.scraper._page_url(1), "https://geezjobs.com/search-jobs?page=2")
+        self.assertEqual(self.scraper._page_url(6), "https://geezjobs.com/search-jobs?page=7")
+
+    def test_parse_extracts_cards_from_html(self):
+        from bs4 import BeautifulSoup
+
+        raw = BeautifulSoup(GEEZJOBS_SAMPLE_HTML, "html.parser")
+        items = self.scraper.parse(raw)
+        self.assertEqual(len(items), 2)
+
+        first = items[0]
+        self.assertEqual(first["title"], "Senior Finance Officer")
+        self.assertEqual(first["slug"], "senior-finance-officer-dololo-import-and-export-plc")
+        self.assertEqual(
+            first["url"],
+            "https://geezjobs.com/job-detail/senior-finance-officer-dololo-import-and-export-plc",
+        )
+        self.assertEqual(first["company"], "Dololo Import And Export PLC")
+        self.assertEqual(first["location"], "Addis Ababa")
+        self.assertEqual(first["country"], "Ethiopia")
+        self.assertEqual(
+            first["logo"], "https://geezjobs.com/image/logo/4608638Dololo_Import.jpg"
+        )
+        self.assertEqual(first["employment_text"], "Full-time / Permanent")
+        self.assertEqual(first["job_time"], "full_time")
+        self.assertEqual(first["job_type"], "permanent")
+        self.assertEqual(first["experience_text"], "4+ Years")
+        self.assertEqual(first["min_experience_years"], 4)
+        self.assertIsNone(first["max_experience_years"])
+        self.assertEqual(first["deadline_text"], "Deadline: September 7, 2026")
+        # Parsed deadline = local midnight; build the expected offset from the
+        # active timezone so the assertion survives a TIME_ZONE change.
+        expected_deadline = timezone.make_aware(datetime(2026, 9, 7)).isoformat()
+        self.assertEqual(first["deadline"], expected_deadline)
+        # Estimated from the posted-ago chip: roughly now.
+        self.assertIsNotNone(first["published_at"])
+
+        # The letter-placeholder card (no logo img) still parses.
+        second = items[1]
+        self.assertEqual(second["title"], "Office Engineer")
+        self.assertEqual(second["location"], "Sendafa")
+        self.assertEqual(second["logo"], "")
+        self.assertEqual(second["experience_text"], "3/5+ Years")
+        self.assertEqual(second["min_experience_years"], 3)
+        self.assertEqual(second["max_experience_years"], 5)
+
+    def test_chip_parsers(self):
+        from core.scrapers.geezjobs import (
+            _parse_deadline,
+            _parse_employment,
+            _parse_experience,
+            _parse_posted,
+        )
+
+        # Experience: 'N+ Years', 'N/M Years', 'N Years', and 'N/M+ Years'.
+        self.assertEqual(_parse_experience("3+ Years"), (3, None))
+        self.assertEqual(_parse_experience("2/3 Years"), (2, 3))
+        self.assertEqual(_parse_experience("6 Years"), (6, 6))
+        self.assertEqual(_parse_experience("3/5+ Years"), (3, 5))
+        self.assertEqual(_parse_experience("10+ Years"), (10, None))
+        self.assertEqual(_parse_experience(""), (None, None))
+
+        # Employment: time + type split, hyphens normalized to underscores.
+        self.assertEqual(_parse_employment("Full-time / Permanent"), ("full_time", "permanent"))
+        self.assertEqual(_parse_employment("Part-Time / Contract"), ("part_time", "contract"))
+        self.assertEqual(_parse_employment("Full-time / Internship"), ("full_time", "internship"))
+        self.assertEqual(_parse_employment(""), ("", ""))
+
+        # Relative posted-ago chips estimate published_at; unknown text -> None.
+        self.assertIsNotNone(_parse_posted("Posted: 3 min ago"))
+        self.assertIsNotNone(_parse_posted("Posted: 1 hours ago"))
+        self.assertIsNotNone(_parse_posted("Posted: 2 days ago"))
+        self.assertIsNone(_parse_posted(""))
+        self.assertIsNone(_parse_posted("Posted: whenever"))
+
+        # Absolute deadlines parse to aware local midnight (full + abbreviated
+        # month names).
+        self.assertIsNotNone(_parse_deadline("Deadline: September 7, 2026"))
+        self.assertIsNotNone(_parse_deadline("Deadline: Aug 7, 2026"))
+        self.assertIsNone(_parse_deadline("nope"))
+
+    def test_parse_raises_on_bot_check_page(self):
+        from bs4 import BeautifulSoup
+
+        # Honeypot present, NO cards and NO search UI -> likely bot detection.
+        blocked = BeautifulSoup(
+            '<html><body><div class="trap-field"><input type="checkbox" '
+            'name="is_bot"></div></body></html>',
+            "html.parser",
+        )
+        with self.assertRaises(ScrapeError) as ctx:
+            self.scraper.parse(blocked)
+        self.assertIn("bot detection", str(ctx.exception))
+
+    def test_parse_returns_empty_on_genuine_empty_page(self):
+        from bs4 import BeautifulSoup
+
+        # Real listings page (filter UI present) but zero cards: legit empty.
+        empty = BeautifulSoup(
+            '<html><body><div class="filter-group"></div>'
+            '<form action="/search-jobs"></form></body></html>',
+            "html.parser",
+        )
+        self.assertEqual(self.scraper.parse(empty), [])
+
+    def test_normalize_maps_card_fields(self):
+        item = self.scraper.normalize(GEEZJOBS_SAMPLE)
+        self.assertEqual(item["external_id"], "senior-finance-officer-dololo-import-and-export-plc")
+        self.assertEqual(item["title"], "Senior Finance Officer")
+        self.assertEqual(item["company"], "Dololo Import And Export PLC")
+        self.assertEqual(item["location"], "Addis Ababa")
+        # The time part of the employment chip maps to the shared enum.
+        self.assertEqual(item["job_type"], "FULL_TIME")
+        self.assertIsNotNone(item["published_at"])
+        self.assertIsNotNone(item["deadline"])
+
+    @staticmethod
+    def _item(days_ago=0):
+        """A normalized GeezJobs item published ``days_ago`` days from now."""
+        return {
+            "external_id": "slug-%d" % days_ago,
+            "title": "Job %d" % days_ago,
+            "location": "Addis Ababa",
+            "job_type": "FULL_TIME",
+            "published_at": timezone.now() - timedelta(days=days_ago),
+            "raw_data": {"slug": "slug-%d" % days_ago},
+        }
+
+    def test_keep_item_drops_pre_today(self):
+        self.assertTrue(self.scraper._keep_item(self._item(0)))
+        self.assertFalse(self.scraper._keep_item(self._item(1)))
+        self.assertFalse(self.scraper._keep_item(self._item(3)))
+
+    def test_past_today_boundary(self):
+        # A page whose kept items are all pre-today marks the boundary.
+        self.assertTrue(
+            self.scraper._past_today_boundary(2, [self._item(1), self._item(3)])
+        )
+        # A page with today's items (even mixed) does not.
+        self.assertFalse(
+            self.scraper._past_today_boundary(0, [self._item(0), self._item(1)])
+        )
+
+    def test_save_detail_persists_everything_and_links_master(self):
+        item = self.scraper.normalize(GEEZJOBS_SAMPLE)
+        item["raw_data"] = GEEZJOBS_SAMPLE
+        master_item = ScrapedItem.objects.create(
+            source=self.source,
+            external_id=item["external_id"],
+            title=item["title"],
+            job_number=1,
+            numbered_on=timezone.localdate(),
+        )
+        self.scraper._save_detail(item, master_item)
+        detail = GeezJob.objects.get(external_id=item["external_id"])
+        self.assertEqual(detail.company, "Dololo Import And Export PLC")
+        self.assertEqual(detail.location, "Addis Ababa")
+        self.assertEqual(detail.country, "Ethiopia")
+        self.assertEqual(detail.job_time, "full_time")
+        self.assertEqual(detail.job_type, "permanent")
+        self.assertEqual(detail.employment_display, "full_time / permanent")
+        self.assertEqual(detail.min_experience_years, 4)
+        self.assertEqual(detail.deadline_text, "Deadline: September 7, 2026")
+        self.assertEqual(detail.job_number, 1)
+        master_item.refresh_from_db()
+        self.assertEqual(master_item.geezjobs_job_id, detail.pk)
+
+    def test_generic_record_detail_log_writes_geezjobs_site_log(self):
+        run = make_run(api_hits=2, found=3)
+        log_id = self.scraper.record_detail_log(run, timezone.localdate())
+        self.assertIsNotNone(log_id)
+        site_log = GeezScrapeLog.objects.get()
+        self.assertEqual(len(site_log.scraped_log), 1)
+        self.assertEqual(site_log.api_hits, 2)
+        # The master bucket references the right table.
+        master = self.scraper._update_master_day_log(run, timezone.localdate(), log_id)
+        bucket = master.website("geezjobs")
+        self.assertEqual(bucket["table"], "GeezScrapeLog")
+        self.assertEqual(bucket["log_id"], log_id)
+        self.assertEqual(bucket["status"], "success")
+
+    def test_sweep_stops_at_today_boundary(self):
+        # Page 0 carries today's listing (pre-today items are already dropped
+        # inside _page_items by _keep_item); page 1 is entirely pre-today, so
+        # its kept list is empty and the sweep must stop there — storing only
+        # the single today item and its detail row, and logging the run.
+        today_item = self.scraper.normalize(GEEZJOBS_SAMPLE)
+        today_item["external_id"] = "today-1"
+        today_item["raw_data"] = {**GEEZJOBS_SAMPLE, "slug": "today-1"}
+        pages = [
+            ([today_item], 200),  # page 0: today's listing
+            ([], 200),            # page 1: nothing kept -> stop
+        ]
+        with mock.patch.object(self.scraper, "_page_items", side_effect=pages):
+            self.scraper.scrape_many()
+
+        self.assertTrue(ScrapedItem.objects.filter(external_id="today-1").exists())
+        self.assertEqual(GeezJob.objects.count(), 1)
+        self.assertEqual(GeezJob.objects.get().job_number, 1)
+        # The run landed in the per-site day log for the master rollup.
+        site_log = GeezScrapeLog.objects.get(source=self.source)
+        self.assertEqual(site_log.run_count, 1)
+        self.assertEqual(site_log.items_inserted, 1)
+
+    def test_factory_dispatches_geezjobs_by_slug(self):
+        from core.scrapers import ScraperFactory
+
+        scraper = ScraperFactory.for_source(self.source)
+        self.assertIsInstance(scraper, GeezJobsScraper)
+        self.assertIsInstance(scraper, HtmlScraper)
 
 
 class ApiIssueTests(TestCase):

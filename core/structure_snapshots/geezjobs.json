@@ -1,0 +1,23 @@
+{
+  "source": "geezjobs",
+  "captured_at": "2026-08-07T12:32:41+00:00",
+  "fields": [
+    "company",
+    "country",
+    "deadline",
+    "deadline_text",
+    "employment_text",
+    "experience_text",
+    "job_time",
+    "job_type",
+    "location",
+    "logo",
+    "max_experience_years",
+    "min_experience_years",
+    "posted_text",
+    "published_at",
+    "slug",
+    "title",
+    "url"
+  ]
+}

@@ -180,6 +180,14 @@ class ScrapedItem(TimeStampedModel):
         related_name="scraped_item_master",
         help_text="HaHuJobs-specific detail row for this listing.",
     )
+    geezjobs_job = models.OneToOneField(
+        "GeezJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scraped_item_master",
+        help_text="GeezJobs-specific detail row for this listing.",
+    )
 
     class Meta:
         ordering = ["-numbered_on", "job_number"]
@@ -617,9 +625,174 @@ class HaHuScrapeLog(TimeStampedModel):
         return f"HaHuJobs · {self.day} · {self.run_count} run(s) · {self.status}"
 
 
+class GeezJob(TimeStampedModel):
+    """GeezJobs-specific job details (per-site model, isolated per website).
+
+    GeezJobs (``geezjobs.com``) is a server-side HTML site — there is no JSON
+    API — so the per-site row mirrors the fields shown on each listing card on
+    ``/search-jobs`` (title, company, location, deadline, employment,
+    experience, ``Posted: X ago`` chip, logo). ``external_id`` is the stable
+    job-detail slug (the last segment of the detail URL, e.g.
+    ``office-engineer-4b-trading-plc``).
+
+    ``published_at`` is ESTIMATED from the card's relative ``Posted: X ago``
+    chip — the site exposes no exact timestamps — and drives the today-only
+    filter and per-day numbering. The site splits employment into a job TIME
+    (``full_time`` / ``part_time``) and a job TYPE (``permanent`` / ``contract`` /
+    ``internship`` / ``freelance`` / ``volunteer``); both raw values are kept here
+    (the shared ``JobType`` enum has no ``permanent``/``volunteer`` values),
+    while the master ``ScrapedItem.job_type`` carries the time-based value.
+    Linked from ``ScrapedItem.geezjobs_job``.
+    """
+
+    external_id = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Dedup key — the job-detail slug from the listing URL.",
+    )
+    title = models.CharField(max_length=500)
+    slug = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="URL slug, e.g. 'office-engineer-4b-trading-plc'.",
+    )
+    company = models.CharField(max_length=255, blank=True, default="")
+    company_logo = models.URLField(
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text="Company logo URL from the card (cards without a logo show a letter placeholder).",
+    )
+    location = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="City/area from the card, e.g. 'Addis Ababa' or 'Kality, Addis Ababa'.",
+    )
+    country = models.CharField(max_length=64, blank=True, default="", help_text="Country shown on the card (usually 'Ethiopia').")
+    deadline = models.DateTimeField(null=True, blank=True, help_text="Parsed from the card's deadline text.")
+    deadline_text = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Raw card text, e.g. 'Deadline: September 7, 2026'.",
+    )
+    employment_text = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text="Raw chip, e.g. 'Full-time / Permanent'.",
+    )
+    job_time = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Site's job-time filter value: full_time / part_time.",
+    )
+    job_type = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Site's job-type filter value: permanent / contract / internship / freelance / volunteer.",
+    )
+    experience_text = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Raw chip, e.g. '3+ Years' or '2/3 Years'.",
+    )
+    min_experience_years = models.PositiveIntegerField(null=True, blank=True)
+    max_experience_years = models.PositiveIntegerField(null=True, blank=True)
+    posted_text = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Raw chip, e.g. 'Posted: 3 min ago'.",
+    )
+    published_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Estimated from the 'Posted: X ago' chip (the site exposes no exact timestamps).",
+    )
+    url = models.URLField(max_length=1000, blank=True, default="", help_text="Absolute job-detail URL.")
+    raw_payload = models.JSONField(default=dict, blank=True, help_text="The parsed card fields (raw HTML-derived data).")
+    # Same per-day numbering as the master ScrapedItem (01, 02, ...).
+    job_number = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Per-day sequential number, mirroring ScrapedItem.job_number.",
+    )
+    numbered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Local day this job was numbered on.",
+    )
+
+    class Meta:
+        ordering = ["-numbered_on", "job_number"]
+
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
+    @property
+    def employment_display(self) -> str:
+        """Joined employment values for admin lists, e.g. 'full_time / permanent'."""
+        return " / ".join(part for part in (self.job_time, self.job_type) if part) or "—"
+
+    def __str__(self):
+        return f"{self.job_number_display} · {self.title}"
+
+
+class GeezScrapeLog(TimeStampedModel):
+    """Per-website log for GeezJobs — ONE record per (source, day).
+
+    Identical contract to ``AfriworkScrapeLog``: each scrape run that day
+    APPENDS its summary to ``scraped_log`` and bumps the day totals. The
+    master ``ScrapeLog`` references this row via its ``websites`` bucket
+    (``table`` + ``log_id``).
+    """
+
+    source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="geezjobs_day_logs")
+    day = models.DateField(db_index=True, help_text="The local day this rollup covers.")
+    status = models.CharField(
+        max_length=16,
+        choices=ScrapeStatus.choices,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's runs.",
+    )
+    run_count = models.PositiveIntegerField(default=0, help_text="How many scrape runs happened this day.")
+    api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests made this day.")
+    items_found = models.PositiveIntegerField(default=0, help_text="Total items found this day.")
+    items_inserted = models.PositiveIntegerField(default=0)
+    items_updated = models.PositiveIntegerField(default=0)
+    items_skipped = models.PositiveIntegerField(default=0)
+    scraped_log = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="One summary entry per scrape run that day (grows as we scrape).",
+    )
+
+    class Meta:
+        ordering = ["-day"]
+        constraints = [
+            models.UniqueConstraint(fields=["source", "day"], name="uniq_geezjobs_daylog_src_day"),
+        ]
+
+    def last_run(self) -> dict | None:
+        """The most recent run entry for this site/day."""
+        return self.scraped_log[-1] if self.scraped_log else None
+
+    def __str__(self):
+        return f"GeezJobs · {self.day} · {self.run_count} run(s) · {self.status}"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.
 # Append new website logs here as they are built (e.g. ``HaHuScrapeLog``)
 # and the master rollup picks them up automatically.
-SITE_LOG_MODELS = [AfriworkScrapeLog, EthioJobsScrapeLog, HaHuScrapeLog]
+SITE_LOG_MODELS = [AfriworkScrapeLog, EthioJobsScrapeLog, HaHuScrapeLog, GeezScrapeLog]

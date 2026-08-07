@@ -298,6 +298,16 @@ Everything config-driven. The base also provides:
   `_keep_item`/`_past_today_boundary`. Auth tokens read from
   `settings.ETHIOJOBS_TOKEN` and injected into the `x-custom-header` (a
   longer-lived token goes in `.env`; the seed stores an empty placeholder).
+- **`HtmlScraper` + `GeezJobsScraper`** (GeezJobs, server-side HTML) — no JSON
+  API: the listings are baked into `.opportunity-card` divs on /search-jobs.
+  `HtmlScraper` is the generic GET/HTML base (page 1 = bare URL, `?page=N`
+  from page 2; client-side today filter driven by relative "Posted: X ago"
+  chips). `GeezJobsScraper` adds the card parsing, estimates `published_at`
+  from the relative chip, splits employment into time + type, and treats a
+  page with no cards AND no search UI as a bot-check page (the site embeds a
+  `.trap-field` honeypot that is never submitted — GETs only) by raising
+  instead of silently storing nothing. Registered per-slug in
+  `ScraperFactory` like HaHuJobs.
 
 Note on client-side filters: `_keep_item`/`_past_today_boundary` are designed
 for DATE-based filtering (an all-old page legitimately ends the sweep).
