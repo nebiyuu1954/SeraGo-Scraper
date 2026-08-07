@@ -1,0 +1,14 @@
+# SeraGo core stack (see SeraGo_Project_Overview.md)
+Django>=5.0,<7
+httpx>=0.27
+beautifulsoup4>=4.12
+lxml>=5.2
+orjson>=3.10
+python-dotenv>=1.0
+
+# Task queue / broker (used from the Celery integration step onward)
+celery>=5.3
+redis>=5.0
+
+# PostgreSQL driver (SQLite used for local dev/tests)
+psycopg[binary]>=3.1
