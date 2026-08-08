@@ -242,6 +242,10 @@ HAHUJOBS_PAGINATION = {
 # ago' timestamps, so published_at is ESTIMATED (now − offset) and the
 # HtmlScraper stops the sweep client-side once a page has no items posted
 # today (date_filter without from/to vars — same semantics as EthioJobs).
+# The site is behind a Hostinger CDN/WAF that has been returning 403 for our
+# network on every path (even in a real browser), so the source fetches
+# through the free r.jina.ai relay (pagination.relay below) — see
+# HtmlScraper._relay_url/fetch.
 GEEZJOBS_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -270,12 +274,20 @@ GEEZJOBS_PAGINATION = {
     # ?page=N from page 2 onward (page 1 is the bare /search-jobs URL).
     "page_1_based": True,
     "page_key": "page",
+    # Fetch through the free r.jina.ai relay: HtmlScraper embeds the page URL
+    # in https://r.jina.ai/<url> and asks for raw HTML (X-Return-Format: html,
+    # X-No-Cache: true). GeezJobs' Hostinger WAF blocks our network (403 on
+    # every path) but does not block Jina's infrastructure, so this source
+    # keeps scraping while the block is in place. The relay adds latency, so
+    # the timeout is raised to 60s. Set JINA_API_KEY (settings/.env) for the
+    # free tier's higher request limits.
+    "relay": "jina",
+    "timeout": 60.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
     # no items posted today (estimated from the relative posted-ago chips).
     "date_filter": {"field": "published_at"},
     "max_pages": 20,
-    "timeout": 30.0,
 }
 
 # Ethiopian Reporter Jobs — WordPress (Noo Job Board theme) server-side HTML:

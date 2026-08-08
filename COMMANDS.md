@@ -99,6 +99,24 @@ Options:
 
 ---
 
+### Fetch relays (why some sources don't hit the site directly)
+
+A source can fetch through a relay so the target site never sees your IP.
+`HtmlScraper` supports `pagination.relay: "jina"` (e.g. GeezJobs): the page
+URL is percent-encoded into `https://r.jina.ai/<url>` and fetched from Jina's
+infrastructure with `X-Return-Format: html` (raw HTML, so parsing is
+unchanged) and `X-No-Cache: true`. GeezJobs' Hostinger WAF blocks our network
+(403 on every path) but does not block Jina's, so the relay keeps that source
+scraping. Note: the logged `http_status` is the relay's response, not the
+target site's (a relayed 403 still shows as 200 in `pages_hit`; a blocked
+target surfaces as a `ScrapeError` from parsing). Optional: set `JINA_API_KEY`
+in the environment (or `.env`) for the
+free tier's higher request limits. To fetch a source directly again, remove
+`"relay": "jina"` from its pagination config in `seed_sources.py` and re-run
+`seed_sources`.
+
+---
+
 ### `capture_structure <slug>`
 Fetch one page from a source's live API and write the flattened field paths
 of the first listing to `core/structure_snapshots/<slug>.json`. Run this

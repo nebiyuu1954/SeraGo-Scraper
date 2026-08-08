@@ -143,6 +143,12 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # database. Set ETHIOJOBS_TOKEN in the environment (or .env) for production.
 ETHIOJOBS_TOKEN = os.environ.get("ETHIOJOBS_TOKEN", "")
 
+# Optional Jina Reader API key (free). Sources that fetch through the
+# r.jina.ai relay (pagination.relay="jina", e.g. GeezJobs) send it as a Bearer
+# token for the free tier's higher request limits (500 req/min vs 20 without
+# a key). See core/scrapers/html.py.
+JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
+
 
 # Logging — observable, structured console logs (Flower/Celery later).
 

@@ -17,7 +17,7 @@ from unittest import mock
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
@@ -906,6 +906,57 @@ class GeezJobsScraperTests(TestCase):
         self.assertEqual(self.scraper._page_url(0), "https://geezjobs.com/search-jobs")
         self.assertEqual(self.scraper._page_url(1), "https://geezjobs.com/search-jobs?page=2")
         self.assertEqual(self.scraper._page_url(6), "https://geezjobs.com/search-jobs?page=7")
+
+    def test_jina_relay_url_encodes_target_with_query(self):
+        # With pagination.relay="jina" the target (query string included) is
+        # percent-encoded into the relay's path, so ?page=N stays part of the
+        # target URL instead of becoming the relay's own query param.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.assertEqual(
+            self.scraper._relay_url("https://geezjobs.com/search-jobs?page=2"),
+            "https://r.jina.ai/https%3A%2F%2Fgeezjobs.com%2Fsearch-jobs%3Fpage%3D2",
+        )
+        # No relay configured -> the URL passes through unchanged.
+        self.source.pagination = {"page_1_based": True}
+        self.assertEqual(
+            self.scraper._relay_url("https://geezjobs.com/search-jobs"),
+            "https://geezjobs.com/search-jobs",
+        )
+
+    def test_fetch_uses_jina_relay_when_configured(self):
+        # With the relay on, fetch() hits the relay URL and asks for fresh raw
+        # HTML (the site-specific parse needs the markup, not markdown).
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        with mock.patch("core.scrapers.html.httpx.get") as get:
+            get.return_value.status_code = 200
+            get.return_value.raise_for_status = lambda: None
+            get.return_value.text = GEEZJOBS_SAMPLE_HTML
+            self.scraper.fetch(0)
+        self.assertEqual(
+            get.call_args.args[0],
+            "https://r.jina.ai/https%3A%2F%2Fgeezjobs.com%2Fsearch-jobs",
+        )
+        headers = get.call_args.kwargs["headers"]
+        self.assertEqual(headers["X-Return-Format"], "html")
+        self.assertEqual(headers["X-No-Cache"], "true")
+        # The site's browser headers must NOT be forwarded — the relay's own
+        # WAF 403s requests carrying a browser User-Agent.
+        self.assertNotIn("User-Agent", headers)
+        self.assertNotIn("Accept", headers)
+        self.assertNotIn("Authorization", headers)  # no JINA_API_KEY configured
+
+        # When JINA_API_KEY is configured, the relay gets a Bearer token
+        # (mocked too — no real network calls in tests).
+        with override_settings(JINA_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get"
+        ) as get2:
+            get2.return_value.status_code = 200
+            get2.return_value.raise_for_status = lambda: None
+            get2.return_value.text = GEEZJOBS_SAMPLE_HTML
+            self.scraper.fetch(0)
+        headers = get2.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer test-key")
 
     def test_parse_extracts_cards_from_html(self):
         from bs4 import BeautifulSoup

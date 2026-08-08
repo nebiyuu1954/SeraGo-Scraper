@@ -23,14 +23,23 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
+from django.conf import settings
 from django.utils import timezone
 
 from .base import BaseScraper, transform_parse_datetime
 
 DEFAULT_TIMEOUT = 30.0
+
+# Base URL of the r.jina.ai reader relay (free tier: ~20 req/min without a
+# key, 500 req/min with a free JINA_API_KEY). When a source sets
+# ``pagination.relay: "jina"`` its pages are fetched from Jina's own
+# infrastructure, so the target site never sees our IP — a WAF that blocks us
+# (e.g. GeezJobs' Hostinger edge returning 403) does not block Jina's.
+JINA_BASE_URL = "https://r.jina.ai"
 
 # Full and abbreviated month names for the shared date-text parser below.
 # (GeezJobs shows 'September 7, 2026'; Ethiopian Reporter Jobs shows
@@ -100,19 +109,54 @@ class HtmlScraper(BaseScraper):
             return self.source.endpoint if number <= 1 else f"{self.source.endpoint}?{key}={number}"
         return self.source.endpoint if page == 0 else f"{self.source.endpoint}?{key}={page}"
 
+    def _relay_url(self, url: str) -> str:
+        """Route a target page URL through the configured relay (currently r.jina.ai).
+
+        The target URL — including its query string — is percent-encoded and
+        embedded in the relay's own path, so pagination (``?page=N``) stays
+        part of the target instead of leaking onto the relay's request.
+        Returns the URL unchanged when no relay is configured.
+        """
+        relay = (self.source.pagination or {}).get("relay")
+        if relay == "jina":
+            # safe='%' keeps already-encoded segments (%XX) intact while still
+            # encoding ?, &, = etc. — the relay path must never double-encode.
+            return f"{JINA_BASE_URL}/{quote(url, safe='%')}"
+        return url
+
     def fetch(self, page: int = 0) -> BeautifulSoup:
         """GET one listing page and return its parsed DOM."""
-        url = self._page_url(page)
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            **(self.source.headers or {}),
-        }
+        url = self._relay_url(self._page_url(page))
+        relay = (self.source.pagination or {}).get("relay")
+        if relay == "jina":
+            # Fetch through the r.jina.ai reader, which requests the target
+            # site itself. The source's browser headers are deliberately NOT
+            # forwarded: the relay's own WAF 403s requests carrying a browser
+            # User-Agent (a bot-avoidance heuristic). We ask for fresh raw
+            # HTML (the site-specific parse needs the markup, not markdown)
+            # and send the free JINA_API_KEY (settings/.env) when configured.
+            headers = {
+                "X-Return-Format": "html",
+                "X-No-Cache": "true",
+            }
+            # settings already reads JINA_API_KEY from the environment at import.
+            api_key = getattr(settings, "JINA_API_KEY", "") or ""
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        else:
+            headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                **(self.source.headers or {}),
+            }
         response = httpx.get(
             url,
             headers=headers,
             timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
         )
-        # Record the request even when it fails — it still hit the site.
+        # Record the request even when it fails — it still hit the site (or relay).
+        # With a relay, the logged http_status is the RELAY's response (e.g. 200
+        # even when the target site 403s); parse() still fails loudly on
+        # bot-check/error pages, so a blocked target doesn't read as success.
         self._record_api_call(page, response.status_code)
         response.raise_for_status()
         return BeautifulSoup(response.text, "html.parser")
