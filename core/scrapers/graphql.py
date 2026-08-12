@@ -21,7 +21,14 @@ from django.utils import timezone
 
 from core.models import AfriworkJob, AfriworkScrapeLog, ScrapedItem
 
-from .base import BaseScraper, ScrapeError, dig, transform_parse_datetime
+from .base import (
+    DEFAULT_RETRIES,
+    BaseScraper,
+    ScrapeError,
+    dig,
+    request_with_retry,
+    transform_parse_datetime,
+)
 
 DEFAULT_PAGE_SIZE = 10
 DEFAULT_TIMEOUT = 30.0
@@ -31,6 +38,10 @@ class GraphQLScraper(BaseScraper):
     """Paged POST/JSON scraper for Hasura GraphQL endpoints."""
 
     site_log_model = AfriworkScrapeLog
+    #: Per-site detail model + the OneToOne link on ScrapedItem — lets the
+    #: shared batch-save path upsert every detail row in one statement.
+    detail_model = AfriworkJob
+    detail_fk_field = "afriwork_job"
 
     def _today_range(self) -> tuple[datetime, datetime]:
         """Today's local-day window as aware datetimes: [00:00, tomorrow 00:00)."""
@@ -75,11 +86,13 @@ class GraphQLScraper(BaseScraper):
         payload = self._build_payload(page)
         headers = {"Content-Type": "application/json", **(self.source.headers or {})}
 
-        response = httpx.post(
-            self.source.endpoint,
+        response = request_with_retry(
+            httpx.post,
+            url=self.source.endpoint,
             json=payload,
             headers=headers,
             timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
+            retries=int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES)),
         )
         # Record the request even when it fails — it still hit the API.
         self._record_api_call(page, response.status_code)
@@ -103,6 +116,38 @@ class GraphQLScraper(BaseScraper):
                 names.append(node["name"])
         return names
 
+    def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
+        """The AfriworkJob field values for a listing (a faithful mirror of the raw payload)."""
+        raw = item.get("raw_data") or {}
+        city = raw.get("city") or {}
+        country = (city.get("country") or {}).get("name") or ""
+        entity = raw.get("entity") or {}
+        return {
+            "title": raw.get("title") or item.get("title") or "",
+            "description": item.get("description") or "",
+            "location": item.get("location") or city.get("name") or "",
+            "country": country,
+            "job_type": item.get("job_type") or "",
+            "job_site": raw.get("job_site") or "",
+            "experience_level": raw.get("experience_level") or "",
+            "approval_status": raw.get("approval_status") or "",
+            "published_at": item.get("published_at"),
+            "deadline": item.get("deadline"),
+            "api_created_at": transform_parse_datetime(raw.get("created_at")),
+            "api_updated_at": transform_parse_datetime(raw.get("updated_at")),
+            "refreshed_at": transform_parse_datetime(raw.get("refreshed_at")),
+            "entity_type": entity.get("type") or "",
+            "entity_name": entity.get("name") or "",
+            "skills": self._nested_names(raw, "skill_requirements"),
+            "sectors": self._nested_names(raw, "sectors"),
+            "compensation_amount_cents": raw.get("compensation_amount_cents"),
+            "compensation_type": raw.get("compensation_type") or "",
+            "compensation_currency": raw.get("compensation_currency") or "",
+            "raw_payload": raw,
+            "job_number": instance.job_number,
+            "numbered_on": instance.numbered_on,
+        }
+
     def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
         """Create/update the AfriworkJob detail row and link it to the master.
 
@@ -110,38 +155,9 @@ class GraphQLScraper(BaseScraper):
         per-site model is a faithful mirror of the raw response (the raw JSON
         is also kept verbatim in ``raw_payload``).
         """
-        raw = item.get("raw_data") or {}
-        city = raw.get("city") or {}
-        country = (city.get("country") or {}).get("name") or ""
-        entity = raw.get("entity") or {}
-
         afriwork, _ = AfriworkJob.objects.update_or_create(
             external_id=instance.external_id,
-            defaults={
-                "title": raw.get("title") or item.get("title") or "",
-                "description": item.get("description") or "",
-                "location": item.get("location") or city.get("name") or "",
-                "country": country,
-                "job_type": item.get("job_type") or "",
-                "job_site": raw.get("job_site") or "",
-                "experience_level": raw.get("experience_level") or "",
-                "approval_status": raw.get("approval_status") or "",
-                "published_at": item.get("published_at"),
-                "deadline": item.get("deadline"),
-                "api_created_at": transform_parse_datetime(raw.get("created_at")),
-                "api_updated_at": transform_parse_datetime(raw.get("updated_at")),
-                "refreshed_at": transform_parse_datetime(raw.get("refreshed_at")),
-                "entity_type": entity.get("type") or "",
-                "entity_name": entity.get("name") or "",
-                "skills": self._nested_names(raw, "skill_requirements"),
-                "sectors": self._nested_names(raw, "sectors"),
-                "compensation_amount_cents": raw.get("compensation_amount_cents"),
-                "compensation_type": raw.get("compensation_type") or "",
-                "compensation_currency": raw.get("compensation_currency") or "",
-                "raw_payload": raw,
-                "job_number": instance.job_number,
-                "numbered_on": instance.numbered_on,
-            },
+            defaults=self._detail_defaults(item, instance),
         )
         if instance.afriwork_job_id != afriwork.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(afriwork_job=afriwork)

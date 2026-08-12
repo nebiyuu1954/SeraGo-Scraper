@@ -72,6 +72,10 @@ class ReporterJobsScraper(HtmlScraper):
     """Ethiopian Reporter Jobs — WordPress Noo-theme HTML cards, /page/N/ pagination."""
 
     site_log_model = ReporterScrapeLog
+    #: Per-site detail model + the OneToOne link on ScrapedItem — lets the
+    #: shared batch-save path upsert every detail row in one statement.
+    detail_model = ReporterJob
+    detail_fk_field = "reporter_job"
 
     #: Anchor for the listings archive — its presence means we got a real
     #: listings page (as opposed to a Cloudflare challenge / error page).
@@ -159,30 +163,34 @@ class ReporterJobsScraper(HtmlScraper):
             )
         return items
 
+    def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
+        """The ReporterJob field values for a listing (a faithful mirror of the raw card dict)."""
+        raw = item.get("raw_data") or {}
+        return {
+            "title": raw.get("title") or item.get("title") or "",
+            "url": item.get("url") or raw.get("url") or "",
+            "company": item.get("company") or raw.get("company") or "",
+            "location": item.get("location") or raw.get("location") or "",
+            "job_type_text": raw.get("job_type_text") or "",
+            "job_type": raw.get("job_type") or "",
+            "posted_text": raw.get("posted_text") or "",
+            "published_at": item.get("published_at"),
+            "deadline_text": raw.get("deadline_text") or "",
+            "deadline": item.get("deadline"),
+            "raw_payload": raw,
+            "job_number": instance.job_number,
+            "numbered_on": instance.numbered_on,
+        }
+
     def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
         """Create/update the ReporterJob detail row and link it to the master.
 
         Persists every field the listing card exposes (the parsed card dict is
         also kept verbatim in ``raw_payload``).
         """
-        raw = item.get("raw_data") or {}
         reporter, _ = ReporterJob.objects.update_or_create(
             external_id=instance.external_id,
-            defaults={
-                "title": raw.get("title") or item.get("title") or "",
-                "url": item.get("url") or raw.get("url") or "",
-                "company": item.get("company") or raw.get("company") or "",
-                "location": item.get("location") or raw.get("location") or "",
-                "job_type_text": raw.get("job_type_text") or "",
-                "job_type": raw.get("job_type") or "",
-                "posted_text": raw.get("posted_text") or "",
-                "published_at": item.get("published_at"),
-                "deadline_text": raw.get("deadline_text") or "",
-                "deadline": item.get("deadline"),
-                "raw_payload": raw,
-                "job_number": instance.job_number,
-                "numbered_on": instance.numbered_on,
-            },
+            defaults=self._detail_defaults(item, instance),
         )
         if instance.reporter_job_id != reporter.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(reporter_job=reporter)

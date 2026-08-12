@@ -30,7 +30,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.utils import timezone
 
-from .base import BaseScraper, transform_parse_datetime
+from .base import DEFAULT_RETRIES, BaseScraper, request_with_retry, transform_parse_datetime
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -148,10 +148,12 @@ class HtmlScraper(BaseScraper):
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 **(self.source.headers or {}),
             }
-        response = httpx.get(
-            url,
+        response = request_with_retry(
+            httpx.get,
+            url=url,
             headers=headers,
             timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
+            retries=int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES)),
         )
         # Record the request even when it fails — it still hit the site (or relay).
         # With a relay, the logged http_status is the RELAY's response (e.g. 200

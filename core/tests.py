@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+import httpx
+
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
@@ -628,6 +630,42 @@ class StructureTests(TestCase):
         self.assertIsNone(transform_job_type_code(None))
 
 
+class RequestRetryTests(TestCase):
+    """request_with_retry: transient network errors are retried, then raised."""
+
+    def test_retries_transient_errors_then_succeeds(self):
+        from core.scrapers.base import request_with_retry
+
+        calls = {"n": 0}
+
+        def flaky(**kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise httpx.ReadTimeout("slow server")
+            return "ok"
+
+        self.assertEqual(request_with_retry(flaky, retries=3, backoff_seconds=0), "ok")
+        self.assertEqual(calls["n"], 3)
+
+    def test_raises_after_retries_exhausted(self):
+        from core.scrapers.base import request_with_retry
+
+        def always_fails(**kwargs):
+            raise httpx.ReadTimeout("slow server")
+
+        with self.assertRaises(httpx.ReadTimeout):
+            request_with_retry(always_fails, retries=2, backoff_seconds=0)
+
+    def test_does_not_retry_non_transport_errors(self):
+        from core.scrapers.base import request_with_retry
+
+        def boom(**kwargs):
+            raise ValueError("not a network error")
+
+        with self.assertRaises(ValueError):
+            request_with_retry(boom, retries=3, backoff_seconds=0)
+
+
 class RestScraperTests(TestCase):
     """The REST scraper: config-driven today filter, boundary, generic day log."""
 
@@ -711,6 +749,100 @@ class RestScraperTests(TestCase):
         self.assertEqual(detail.job_number, 1)
         master_item.refresh_from_db()
         self.assertEqual(master_item.ethiojobs_job_id, detail.pk)
+
+    def test_save_items_batches_insert_update_skip(self):
+        """save_items dedupes correctly across the batched insert/update/skip paths."""
+        item = self._item(0)
+        inserted, updated, skipped, errors = self.scraper.save_items([item])
+        self.assertEqual((inserted, updated, skipped, errors), (1, 0, 0, []))
+        master = ScrapedItem.objects.get(external_id="slug-0")
+        self.assertEqual(master.job_number, 1)
+        self.assertEqual(master.numbered_on, timezone.localdate())
+        self.assertEqual(EthioJobsJob.objects.count(), 1)
+        self.assertEqual(
+            ScrapedItem.objects.get(external_id="slug-0").ethiojobs_job_id,
+            EthioJobsJob.objects.get(external_id="slug-0").pk,
+        )
+
+        # Same external_id, changed content -> the bulk update path.
+        changed = self._item(0)
+        changed["title"] = "Job 0 (updated)"
+        inserted, updated, skipped, errors = self.scraper.save_items([changed])
+        self.assertEqual((inserted, updated, skipped, errors), (0, 1, 0, []))
+        master.refresh_from_db()
+        self.assertEqual(master.title, "Job 0 (updated)")
+        # The detail row was upserted in place (ON CONFLICT DO UPDATE) and the
+        # master link still points at it.
+        detail = EthioJobsJob.objects.get(external_id="slug-0")
+        self.assertEqual(detail.title, "Job 0 (updated)")
+        self.assertEqual(
+            ScrapedItem.objects.get(external_id="slug-0").ethiojobs_job_id, detail.pk
+        )
+
+        # Unchanged content -> skipped (touch only).
+        inserted, updated, skipped, errors = self.scraper.save_items([changed])
+        self.assertEqual((inserted, updated, skipped, errors), (0, 0, 1, []))
+
+    def test_backfill_items_numbered_on_their_published_day(self):
+        """Old jobs swept in by a backfill get THEIR day's serials, not today's.
+
+        The whole point of the numbering rule: an item published 3 days ago
+        that first enters the DB today must become #01 of its own day, never
+        #N of today. Items with no published date fall back to today.
+        """
+        from datetime import timedelta
+
+        three_days_ago = timezone.now() - timedelta(days=3)
+        old_early = self._item(3)
+        old_early["published_at"] = three_days_ago - timedelta(hours=1)
+        old_early["external_id"] = "slug-old-early"
+        old_late = self._item(3)
+        old_late["published_at"] = three_days_ago + timedelta(hours=1)
+        old_late["external_id"] = "slug-old-late"
+        fresh = self._item(0)  # published now -> today
+
+        # Passed oldest-first, exactly as scrape_many sorts before save_items.
+        inserted, updated, skipped, errors = self.scraper.save_items(
+            [old_early, old_late, fresh]
+        )
+        self.assertEqual((inserted, updated, skipped, errors), (3, 0, 0, []))
+
+        old_day = timezone.localtime(three_days_ago).date()
+        early_master = ScrapedItem.objects.get(external_id="slug-old-early")
+        late_master = ScrapedItem.objects.get(external_id="slug-old-late")
+        fresh_master = ScrapedItem.objects.get(external_id="slug-0")
+        self.assertEqual(early_master.numbered_on, old_day)
+        self.assertEqual(late_master.numbered_on, old_day)
+        # Chronological within the old day: #01 early, #02 later.
+        self.assertEqual(early_master.job_number, 1)
+        self.assertEqual(late_master.job_number, 2)
+        # Today's serial starts fresh at #01 — untouched by the backfill.
+        self.assertEqual(fresh_master.numbered_on, timezone.localdate())
+        self.assertEqual(fresh_master.job_number, 1)
+
+    def test_insert_item_numbers_on_published_day(self):
+        """The per-item fallback path uses the published day too."""
+        from datetime import timedelta
+
+        old = self._item(3)
+        old["external_id"] = "slug-per-item-old"
+        defaults = {
+            k: v
+            for k, v in old.items()
+            if k not in ("external_id", "raw_data") and v is not None
+        }
+        instance = self.scraper._insert_item("slug-per-item-old", defaults)
+        self.assertIsNotNone(instance)
+        old_day = timezone.localtime(old["published_at"]).date()
+        self.assertEqual(instance.numbered_on, old_day)
+        self.assertEqual(instance.job_number, 1)
+
+        # A second old item for the same day appends to THAT day's serials.
+        defaults["title"] = "Old job, later post"
+        defaults["published_at"] = old["published_at"] + timedelta(hours=1)
+        instance2 = self.scraper._insert_item("slug-per-item-old-2", defaults)
+        self.assertEqual(instance2.numbered_on, old_day)
+        self.assertEqual(instance2.job_number, 2)
 
     def test_generic_record_detail_log_writes_ethiojobs_site_log(self):
         scraper = RestJsonScraper(self.source)
@@ -934,7 +1066,7 @@ class GeezJobsScraperTests(TestCase):
             get.return_value.text = GEEZJOBS_SAMPLE_HTML
             self.scraper.fetch(0)
         self.assertEqual(
-            get.call_args.args[0],
+            get.call_args.kwargs["url"],
             "https://r.jina.ai/https%3A%2F%2Fgeezjobs.com%2Fsearch-jobs",
         )
         headers = get.call_args.kwargs["headers"]
@@ -1625,6 +1757,55 @@ class DayLogTests(TestCase):
         site_log = AfriworkScrapeLog.objects.get()
         self.assertEqual(site_log.run_count, 2)
         self.assertEqual(len(site_log.scraped_log), 2)
+
+    def test_latest_run_wins_site_and_master_status(self):
+        # The user-facing rule: a later successful scrape that captured
+        # everything supersedes an earlier failure (a failed sweep stores no
+        # items, so flipping the status loses nothing — and the run history
+        # stays in scraped_log).
+        scraper = GraphQLScraper(self.source)
+        site_log_id = scraper.record_detail_log(
+            make_run(status="failed", http_status=500, errors=["boom"]), self.today
+        )
+        master = scraper._update_master_day_log(
+            make_run(status="failed", http_status=500, errors=["boom"]), self.today, site_log_id
+        )
+        self.assertEqual(master.status, "failed")
+        site_log = AfriworkScrapeLog.objects.get()
+        self.assertEqual(site_log.status, "failed")
+
+        # A later successful re-scrape flips both to success.
+        site_log_id = scraper.record_detail_log(make_run(found=3), self.today)
+        master = scraper._update_master_day_log(make_run(found=3), self.today, site_log_id)
+        master.refresh_from_db()
+        self.assertEqual(master.status, "success")
+        site_log.refresh_from_db()
+        self.assertEqual(site_log.status, "success")
+        # The failed run is still in the history — nothing was hidden.
+        self.assertEqual(len(site_log.scraped_log), 2)
+        self.assertEqual(site_log.scraped_log[0]["status"], "failed")
+
+    def test_master_stays_failed_while_any_site_latest_run_failed(self):
+        # A site that failed and was never re-scraped keeps the day honest,
+        # even though another site's latest run succeeded.
+        scraper = GraphQLScraper(self.source)
+        other = Source.objects.create(
+            slug="ethiojobs", name="EthioJobs", endpoint="https://example.com/2"
+        )
+        site_log_id = scraper.record_detail_log(
+            make_run(status="failed", http_status=500, errors=["boom"]), self.today
+        )
+        scraper._update_master_day_log(
+            make_run(status="failed", http_status=500, errors=["boom"]), self.today, site_log_id
+        )
+
+        other_scraper = RestJsonScraper(other)
+        other_log_id = other_scraper.record_detail_log(make_run(found=3), self.today)
+        master = other_scraper._update_master_day_log(
+            make_run(found=3), self.today, other_log_id
+        )
+        master.refresh_from_db()
+        self.assertEqual(master.status, "failed")  # afriwork's latest run still failed
 
     def test_bucket_status_falls_back_to_run_status_without_site_log(self):
         scraper = GraphQLScraper(self.source)

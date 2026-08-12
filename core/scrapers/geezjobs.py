@@ -126,6 +126,10 @@ class GeezJobsScraper(HtmlScraper):
     """GeezJobs — server-side HTML listing pages, paginated by ``?page=N``."""
 
     site_log_model = GeezScrapeLog
+    #: Per-site detail model + the OneToOne link on ScrapedItem — lets the
+    #: shared batch-save path upsert every detail row in one statement.
+    detail_model = GeezJob
+    detail_fk_field = "geezjobs_job"
 
     #: Anchor for the search/filter UI — its presence means we got a real
     #: listings page (as opposed to a bot-check / error / login page).
@@ -220,37 +224,41 @@ class GeezJobsScraper(HtmlScraper):
             )
         return items
 
+    def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
+        """The GeezJob field values for a listing (a faithful mirror of the raw card dict)."""
+        raw = item.get("raw_data") or {}
+        return {
+            "title": raw.get("title") or item.get("title") or "",
+            "slug": raw.get("slug") or "",
+            "company": item.get("company") or raw.get("company") or "",
+            "company_logo": raw.get("logo") or "",
+            "location": item.get("location") or raw.get("location") or "",
+            "country": raw.get("country") or "",
+            "deadline": item.get("deadline"),
+            "deadline_text": raw.get("deadline_text") or "",
+            "employment_text": raw.get("employment_text") or "",
+            "job_time": raw.get("job_time") or "",
+            "job_type": raw.get("job_type") or "",
+            "experience_text": raw.get("experience_text") or "",
+            "min_experience_years": raw.get("min_experience_years"),
+            "max_experience_years": raw.get("max_experience_years"),
+            "posted_text": raw.get("posted_text") or "",
+            "published_at": item.get("published_at"),
+            "url": item.get("url") or "",
+            "raw_payload": raw,
+            "job_number": instance.job_number,
+            "numbered_on": instance.numbered_on,
+        }
+
     def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
         """Create/update the GeezJob detail row and link it to the master.
 
         Persists every field the listing card exposes (the parsed card dict is
         also kept verbatim in ``raw_payload``).
         """
-        raw = item.get("raw_data") or {}
         geez, _ = GeezJob.objects.update_or_create(
             external_id=instance.external_id,
-            defaults={
-                "title": raw.get("title") or item.get("title") or "",
-                "slug": raw.get("slug") or "",
-                "company": item.get("company") or raw.get("company") or "",
-                "company_logo": raw.get("logo") or "",
-                "location": item.get("location") or raw.get("location") or "",
-                "country": raw.get("country") or "",
-                "deadline": item.get("deadline"),
-                "deadline_text": raw.get("deadline_text") or "",
-                "employment_text": raw.get("employment_text") or "",
-                "job_time": raw.get("job_time") or "",
-                "job_type": raw.get("job_type") or "",
-                "experience_text": raw.get("experience_text") or "",
-                "min_experience_years": raw.get("min_experience_years"),
-                "max_experience_years": raw.get("max_experience_years"),
-                "posted_text": raw.get("posted_text") or "",
-                "published_at": item.get("published_at"),
-                "url": item.get("url") or "",
-                "raw_payload": raw,
-                "job_number": instance.job_number,
-                "numbered_on": instance.numbered_on,
-            },
+            defaults=self._detail_defaults(item, instance),
         )
         if instance.geezjobs_job_id != geez.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(geezjobs_job=geez)

@@ -35,6 +35,10 @@ class HaHuJobsScraper(GraphQLScraper):
     """HaHuJobs aggregator — the GraphQL pipeline plus site-specific detail."""
 
     site_log_model = HaHuScrapeLog
+    #: Per-site detail model + the OneToOne link on ScrapedItem — lets the
+    #: shared batch-save path upsert every detail row in one statement.
+    detail_model = HaHuJob
+    detail_fk_field = "hahujobs_job"
 
     @staticmethod
     def _city_names(raw: dict) -> list[str]:
@@ -94,13 +98,8 @@ class HaHuJobsScraper(GraphQLScraper):
         inserted, updated, skipped, errors = super().save_items(kept)
         return inserted, updated, skipped + len(dropped), errors
 
-    def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
-        """Create/update the HaHuJob detail row and link it to the master.
-
-        Persists every field the HaHuJobs API returns for a listing, so the
-        per-site model is a faithful mirror of the raw response (the raw JSON
-        is also kept verbatim in ``raw_payload``).
-        """
+    def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
+        """The HaHuJob field values for a listing (a faithful mirror of the raw payload)."""
         raw = item.get("raw_data") or {}
         entity = raw.get("entity") or {}
         sub_sector = raw.get("sub_sector") or {}
@@ -108,49 +107,57 @@ class HaHuJobsScraper(GraphQLScraper):
         area = raw.get("area") or {}
         isco = raw.get("isco_08") or {}
         soc = raw.get("soc_2010") or {}
+        return {
+            "title": raw.get("title") or item.get("title") or "",
+            "description": item.get("description") or "",
+            "type": item.get("job_type") or "",
+            "years_of_experience": raw.get("years_of_experience"),
+            "max_years_of_experience": raw.get("max_years_of_experience"),
+            "salary": item.get("salary"),
+            "deadline": item.get("deadline"),
+            "expired": bool(raw.get("expired")),
+            "location": raw.get("location") or "",
+            "source": raw.get("source") or "",
+            "application_method": raw.get("application_method") or "",
+            "application_url": raw.get("application_url") or "",
+            "application_email": raw.get("application_email") or "",
+            "number_of_applicants": raw.get("number_of_applicants"),
+            "approved_on": item.get("published_at"),
+            "total_web_view_count": raw.get("total_web_view_count") or 0,
+            "telegram_view_count": raw.get("telegram_view_count") or 0,
+            "total_view_count": raw.get("total_view_count") or 0,
+            "entity_id": entity.get("id") or "",
+            "entity_name": entity.get("name") or "",
+            "entity_logo": entity.get("logo") or "",
+            "sector_id": sector.get("id") or "",
+            "sector_name": sector.get("name") or "",
+            "sector_icon_class": sector.get("icon_class") or "",
+            "sector_icon_code": sector.get("icon_code") or "",
+            "sub_sector_name": sub_sector.get("name") or "",
+            "area_name": area.get("name") or "",
+            "area_address": area.get("address") or "",
+            "isco_08_code": isco.get("isco_08_code") or "",
+            "isco_08_title_en": isco.get("title_en") or "",
+            "isco_08_title_am": isco.get("title_am") or "",
+            "soc_2010_title": soc.get("title") or "",
+            "soc_2010_onetsoc_code": soc.get("onetsoc_code") or "",
+            "esco_code": raw.get("esco_code") or "",
+            "cities": self._city_names(raw),
+            "raw_payload": raw,
+            "job_number": instance.job_number,
+            "numbered_on": instance.numbered_on,
+        }
 
+    def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
+        """Create/update the HaHuJob detail row and link it to the master.
+
+        Persists every field the HaHuJobs API returns for a listing, so the
+        per-site model is a faithful mirror of the raw response (the raw JSON
+        is also kept verbatim in ``raw_payload``).
+        """
         hahu, _ = HaHuJob.objects.update_or_create(
             external_id=instance.external_id,
-            defaults={
-                "title": raw.get("title") or item.get("title") or "",
-                "description": item.get("description") or "",
-                "type": item.get("job_type") or "",
-                "years_of_experience": raw.get("years_of_experience"),
-                "max_years_of_experience": raw.get("max_years_of_experience"),
-                "salary": item.get("salary"),
-                "deadline": item.get("deadline"),
-                "expired": bool(raw.get("expired")),
-                "location": raw.get("location") or "",
-                "source": raw.get("source") or "",
-                "application_method": raw.get("application_method") or "",
-                "application_url": raw.get("application_url") or "",
-                "application_email": raw.get("application_email") or "",
-                "number_of_applicants": raw.get("number_of_applicants"),
-                "approved_on": item.get("published_at"),
-                "total_web_view_count": raw.get("total_web_view_count") or 0,
-                "telegram_view_count": raw.get("telegram_view_count") or 0,
-                "total_view_count": raw.get("total_view_count") or 0,
-                "entity_id": entity.get("id") or "",
-                "entity_name": entity.get("name") or "",
-                "entity_logo": entity.get("logo") or "",
-                "sector_id": sector.get("id") or "",
-                "sector_name": sector.get("name") or "",
-                "sector_icon_class": sector.get("icon_class") or "",
-                "sector_icon_code": sector.get("icon_code") or "",
-                "sub_sector_name": sub_sector.get("name") or "",
-                "area_name": area.get("name") or "",
-                "area_address": area.get("address") or "",
-                "isco_08_code": isco.get("isco_08_code") or "",
-                "isco_08_title_en": isco.get("title_en") or "",
-                "isco_08_title_am": isco.get("title_am") or "",
-                "soc_2010_title": soc.get("title") or "",
-                "soc_2010_onetsoc_code": soc.get("onetsoc_code") or "",
-                "esco_code": raw.get("esco_code") or "",
-                "cities": self._city_names(raw),
-                "raw_payload": raw,
-                "job_number": instance.job_number,
-                "numbered_on": instance.numbered_on,
-            },
+            defaults=self._detail_defaults(item, instance),
         )
         if instance.hahujobs_job_id != hahu.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(hahujobs_job=hahu)

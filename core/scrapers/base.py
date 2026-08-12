@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from typing import Any, Callable
 
+import httpx
 from bs4 import BeautifulSoup
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -38,6 +39,46 @@ from core.models import SITE_LOG_MODELS, ScrapeLog, ScrapedItem, ScrapeStatus, S
 logger = logging.getLogger(__name__)
 # Sort key fallback for items without a published date (they sort last).
 _MIN_DATETIME = datetime.min.replace(tzinfo=dt_timezone.utc)
+
+#: How many HTTP attempts per page before a source's run fails. Sources can
+#: override this per-site via ``pagination.retries``.
+DEFAULT_RETRIES = 3
+
+
+def request_with_retry(
+    request_fn: Callable,
+    *,
+    retries: int = DEFAULT_RETRIES,
+    backoff_seconds: float = 2.0,
+    **kwargs: Any,
+) -> Any:
+    """Call ``request_fn(**kwargs)``, retrying transient network failures.
+
+    httpx raises :class:`httpx.TransportError` (which covers read/connect
+    timeouts) when a server opens the connection but never delivers bytes —
+    exactly what flaky job APIs do. Each retry waits ``backoff_seconds *
+    attempt`` before the next try, so three attempts cost about 6s of extra
+    sleep at most. Only transport-level errors are retried; HTTP status
+    errors and payload parsing are left to the caller (``raise_for_status``),
+    and the caller's usual ``_record_api_call`` logs the final attempt.
+    """
+    retries = max(1, retries)
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return request_fn(**kwargs)
+        except httpx.TransportError as exc:
+            last_error = exc
+            if attempt < retries - 1:
+                logger.warning(
+                    "HTTP attempt %d/%d failed (%s) — retrying in %.0fs",
+                    attempt + 1,
+                    retries,
+                    exc,
+                    backoff_seconds * (attempt + 1),
+                )
+                time.sleep(backoff_seconds * (attempt + 1))
+    raise last_error  # type: ignore[misc]  # retries >= 1 guarantees a value
 
 
 class ScrapeError(Exception):
@@ -157,27 +198,46 @@ class BaseScraper(ABC):
 
     # -- per-day numbering helpers --
 
-    def _next_job_number(self) -> int:
-        """Next sequential number for today's batch on this source (01, 02, ...)."""
-        today = timezone.localdate()
+    def _next_job_number(self, day: date | None = None) -> int:
+        """Next sequential number for ``day``'s batch on this source (01, 02, ...).
+
+        Defaults to today when no day is given.
+        """
+        day = day or timezone.localdate()
         last = (
-            ScrapedItem.objects.filter(source=self.source, numbered_on=today)
+            ScrapedItem.objects.filter(source=self.source, numbered_on=day)
             .order_by("-job_number")
             .values_list("job_number", flat=True)
             .first()
         )
         return (last or 0) + 1
 
+    def _numbered_on_for(self, defaults: dict) -> date:
+        """The day a new item is numbered on: its published date, else today.
+
+        Numbering follows the job's own publication day (local time) rather
+        than the insert day, so backfilled historical listings get their own
+        day's serials and never consume today's numbers (an Aug-5 job that
+        first enters the DB today becomes #N of Aug 5, not #300 of today).
+        Jobs without a published date fall back to today.
+        """
+        published = defaults.get("published_at")
+        if not published:
+            return timezone.localdate()
+        if published.tzinfo is None:
+            published = timezone.make_aware(published)
+        return timezone.localtime(published).date()
+
     def _insert_item(self, external_id: str, defaults: dict) -> ScrapedItem | None:
-        """Insert one new item with today's next job number.
+        """Insert one new item with its published day's next job number.
 
         Returns the created instance, or None if the insert kept racing with
         a concurrent worker (duplicate external_id or job_number).
         """
         for _ in range(3):
             insert_data = dict(defaults)
-            insert_data["numbered_on"] = timezone.localdate()
-            insert_data["job_number"] = self._next_job_number()
+            insert_data["numbered_on"] = self._numbered_on_for(insert_data)
+            insert_data["job_number"] = self._next_job_number(insert_data["numbered_on"])
             try:
                 # Own atomic block so the IntegrityError catch below stays safe
                 # even if the caller wrapped the pipeline in a transaction
@@ -215,14 +275,87 @@ class BaseScraper(ABC):
     def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
         """Persist site-specific details for a newly inserted/updated item."""
 
+    def _save_details(self, pairs: list[tuple[dict, ScrapedItem]]) -> None:
+        """Persist site-specific details for a whole batch of saved items.
+
+        Called once per run by :meth:`save_items` (not per item). Subclasses
+        that declare ``detail_model`` / ``detail_fk_field`` get the batched
+        bulk upsert automatically (:meth:`_save_details_batched`); anything
+        else falls through to the per-item :meth:`_save_detail` hook (safe
+        default for any scraper).
+        """
+        if getattr(self, "detail_model", None) is not None:
+            self._save_details_batched(pairs)
+            return
+        for item, instance in pairs:
+            self._save_detail(item, instance)
+
+    def _save_details_batched(self, pairs: list[tuple[dict, ScrapedItem]]) -> None:
+        """Upsert every per-site detail row in ONE statement.
+
+        Rows are keyed on the detail model's unique ``external_id``: new
+        listings are inserted, already-stored ones updated in place
+        (``ON CONFLICT DO UPDATE`` on Postgres/SQLite), and each master
+        item's OneToOne link is refreshed with a single ``bulk_update``.
+        Subclasses provide the field values via :meth:`_detail_defaults` and
+        the wiring via the ``detail_model`` / ``detail_fk_field`` class
+        attributes.
+        """
+        model = self.detail_model
+        fk = self.detail_fk_field
+        rows = [
+            model(
+                external_id=instance.external_id,
+                **self._detail_defaults(item, instance),
+            )
+            for item, instance in pairs
+        ]
+        if not rows:
+            return
+
+        update_fields = [
+            field.name
+            for field in model._meta.concrete_fields
+            if field.name not in ("id", "external_id", "created_at", "updated_at")
+        ]
+        now = timezone.now()
+        for row in rows:
+            row.updated_at = now  # bulk_create does not apply auto_now fields
+        update_fields.append("updated_at")
+
+        model.objects.bulk_create(
+            rows,
+            update_conflicts=True,
+            unique_fields=["external_id"],
+            update_fields=update_fields,
+        )
+
+        # bulk_create's ON CONFLICT rows don't come back with the real DB pk
+        # for UUID-pk models (no RETURNING for non-AutoField pks), so re-read
+        # the rows by external_id — one small indexed query — before linking.
+        detail_pks = {
+            row.external_id: row.pk
+            for row in model.objects.filter(
+                external_id__in=[instance.external_id for _, instance in pairs]
+            )
+        }
+        dirty: list[ScrapedItem] = []
+        for _, instance in pairs:
+            pk = detail_pks.get(instance.external_id)
+            if pk is not None and getattr(instance, f"{fk}_id") != pk:
+                setattr(instance, f"{fk}_id", pk)
+                dirty.append(instance)
+        if dirty:
+            ScrapedItem.objects.bulk_update(dirty, [fk])
+
     def record_detail_log(self, run: dict, day: date) -> str | None:
         """Append this run to the per-website day log; return its pk (or None).
 
         ONE record per (source, day): each run appends its summary to
-        ``scraped_log`` and bumps the day totals (api_hits, items_*, worst
-        status). The returned pk is stored on the master log's ``websites``
-        bucket as ``log_id`` so the master references this site log.
-        Failures are handled by the caller (BaseScraper._close).
+        ``scraped_log`` and bumps the day totals (api_hits, items_*, and the
+        status of the LATEST run). The returned pk is stored on the master
+        log's ``websites`` bucket as ``log_id`` so the master references this
+        site log. Failures are handled by the caller (BaseScraper._close).
 
         Concrete scrapers only need to set ``site_log_model``; this generic
         implementation works for every per-website log because they all
@@ -241,7 +374,11 @@ class BaseScraper(ABC):
         day_log.items_inserted += run.get("items_inserted", 0)
         day_log.items_updated += run.get("items_updated", 0)
         day_log.items_skipped += run.get("items_skipped", 0)
-        day_log.status = self._worst_status(day_log.status, run.get("status"))
+        # The site's status reflects the LATEST run: a later successful scrape
+        # that captured everything supersedes an earlier failure (a failed
+        # sweep stores no items, so flipping the status loses nothing, and the
+        # run history stays in scraped_log).
+        day_log.status = run.get("status") or day_log.status
         day_log.save()
         return str(day_log.pk)
 
@@ -301,12 +438,14 @@ class BaseScraper(ABC):
         )
 
     def _incremental_stop_safe(self) -> bool:
-        """True when today's scrapes of this source all completed cleanly.
+        """True when the latest completed scrape of this source was clean.
 
         Reads the per-website day log (via the SITE_LOG_MODELS registry): its
-        worst status is only ``success`` when EVERY run today succeeded, so
-        the stored id set is a complete snapshot of the day. If any run
-        failed or was truncated (PARTIAL), fall back to a full sweep.
+        ``status`` is the LATEST run's outcome, so ``success`` means the last
+        sweep finished completely (it stopped at a genuinely empty page or
+        the past-today boundary) and the stored id set is a complete snapshot
+        of the day — the incremental stop is safe. If the latest run failed
+        or was truncated (PARTIAL), fall back to a full sweep.
         """
         site_log = self._site_log_for_day(timezone.localdate())
         return site_log is not None and site_log.status == ScrapeStatus.SUCCESS
@@ -373,9 +512,20 @@ class BaseScraper(ABC):
 
         Returns (inserted, updated, skipped, errors). Per-item failures are
         collected so one bad item never kills the run.
+
+        The database writes are BATCHED — one existence query, one
+        ``bulk_create``, one ``bulk_update`` and one touch-UPDATE — instead
+        of per-item round trips. This matters a lot on remote PostgreSQL
+        (Neon), where every individual write costs hundreds of milliseconds;
+        the batched path lands the same data with a tiny fraction of the
+        queries.
         """
         inserted = updated = skipped = 0
         errors: list[str] = []
+        detail_pairs: list[tuple[dict, ScrapedItem]] = []
+
+        # Validate every item up front so a bad row never poisons the batch.
+        candidates: list[tuple[dict, str, str, dict]] = []
         for item in items:
             try:
                 external_id = str(item.get("external_id") or "").strip()
@@ -389,18 +539,159 @@ class BaseScraper(ABC):
                     if key not in ("external_id",) and value is not None
                 }
                 defaults["content_hash"] = content_hash
+                candidates.append((item, external_id, content_hash, defaults))
+            except Exception as exc:  # noqa: BLE001 - keep the run going
+                errors.append(f"{item.get('external_id', '?')}: {exc}")
+        if not candidates:
+            return inserted, updated, skipped, errors
+
+        # Pagination can repeat a listing across pages; the batch path needs
+        # ONE row per external_id (the per-item path used to resolve the
+        # duplicate to a harmless "skipped", but here it would trip the
+        # unique constraint and fall back to the slow path). Keep the first
+        # (chronologically earliest) occurrence.
+        seen_ids: set[str] = set()
+        unique_candidates: list[tuple[dict, str, str, dict]] = []
+        for candidate in candidates:
+            if candidate[1] in seen_ids:
+                continue
+            seen_ids.add(candidate[1])
+            unique_candidates.append(candidate)
+        candidates = unique_candidates
+
+        # One query: which of the ids are already stored for this source?
+        # Full rows (no .only()) so the bulk_update below never triggers
+        # per-instance deferred-field SELECTs for fields absent from a given
+        # item's defaults.
+        existing_rows = {
+            row.external_id: row
+            for row in ScrapedItem.objects.filter(
+                source=self.source,
+                external_id__in=[candidate[1] for candidate in candidates],
+            )
+        }
+
+        new_candidates: list[tuple[dict, str, str, dict]] = []
+        update_objs: list[ScrapedItem] = []
+        update_fields: set[str] = {"content_hash", "updated_at"}
+        skipped_pks: list[ScrapedItem] = []
+        for item, external_id, content_hash, defaults in candidates:
+            existing = existing_rows.get(external_id)
+            if existing is None:
+                new_candidates.append((item, external_id, content_hash, defaults))
+            elif existing.content_hash == content_hash:
+                # Seen again, unchanged: refresh last_seen_at, count as skipped.
+                skipped += 1
+                skipped_pks.append(existing.pk)
+            else:
+                # Note: fields mapped to None are intentionally absent from
+                # ``defaults`` so flaky source fields never wipe good data.
+                # The per-day job_number/numbered_on are assigned once at
+                # insert and are never touched on update.
+                for key, value in defaults.items():
+                    setattr(existing, key, value)
+                    update_fields.add(key)
+                existing.content_hash = content_hash
+                existing.updated_at = timezone.now()
+                update_objs.append(existing)
+                updated += 1
+                detail_pairs.append((item, existing))
+
+        try:
+            if new_candidates:
+                inserted += self._bulk_insert_items(new_candidates, detail_pairs)
+            if update_objs:
+                ScrapedItem.objects.bulk_update(update_objs, sorted(update_fields))
+            if skipped_pks:
+                ScrapedItem.objects.filter(pk__in=skipped_pks).update(
+                    last_seen_at=timezone.now()
+                )
+        except Exception as exc:  # noqa: BLE001 - a write failure must not kill the run
+            errors.append(f"batch save failed: {exc}")
+
+        try:
+            self._save_details(detail_pairs)
+        except Exception as exc:  # noqa: BLE001 - details must never kill the run
+            errors.append(f"detail save failed for {len(detail_pairs)} item(s): {exc}")
+        return inserted, updated, skipped, errors
+
+    def _bulk_insert_items(
+        self,
+        candidates: list[tuple[dict, str, str, dict]],
+        detail_pairs: list[tuple[dict, ScrapedItem]],
+    ) -> int:
+        """Insert new master rows in ONE statement; fall back to per-item on races.
+
+        Returns the number of rows actually inserted. Job numbers are
+        assigned chronologically from the day's current max (the same
+        contract as :meth:`_next_job_number`, queried once per batch instead
+        of per row). A duplicate (source, external_id) or (source, day,
+        job_number) — only possible when two workers scrape the same source
+        concurrently — fails the whole INSERT atomically, so we fall back to
+        the per-item :meth:`_upsert` path, which retries and reconciles.
+        """
+        if not candidates:
+            return 0
+
+        now = timezone.now()
+
+        # Group the batch by the day each job is numbered on (its published
+        # date, else today) so backfilled history never consumes today's
+        # serials. Candidates are already sorted by published time (see
+        # _sort_key), so within each day group the order is chronological:
+        # #01 is the first job posted that day, exactly as before.
+        from collections import defaultdict
+
+        day_groups: dict[date, list] = defaultdict(list)
+        for candidate in candidates:
+            day_groups[self._numbered_on_for(candidate[3])].append(candidate)
+
+        # One query: the current max job_number for every affected day.
+        from django.db.models import Max
+
+        day_maxes = dict(
+            ScrapedItem.objects.filter(
+                source=self.source, numbered_on__in=list(day_groups)
+            )
+            .values("numbered_on")
+            .annotate(max_number=Max("job_number"))
+            .values_list("numbered_on", "max_number")
+        )
+
+        new_objs: list[ScrapedItem] = []
+        for day in sorted(day_groups):
+            next_number = (day_maxes.get(day) or 0) + 1
+            for item, external_id, content_hash, defaults in day_groups[day]:
+                obj = ScrapedItem(
+                    source=self.source,
+                    external_id=external_id,
+                    job_number=next_number,
+                    numbered_on=day,
+                    last_seen_at=now,  # bulk_create does not apply auto_now fields
+                    **defaults,
+                )
+                new_objs.append(obj)
+                next_number += 1
+
+        try:
+            created = ScrapedItem.objects.bulk_create(new_objs)
+        except IntegrityError:
+            # A concurrent worker inserted one of these first — reconcile row
+            # by row (the retry + reload logic in _upsert handles the race).
+            inserted = 0
+            for item, external_id, content_hash, defaults in candidates:
                 status, instance = self._upsert(external_id, content_hash, defaults)
                 if status == "inserted":
                     inserted += 1
-                    self._save_detail(item, instance)
-                elif status == "updated":
-                    updated += 1
-                    self._save_detail(item, instance)
-                else:  # skipped
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001 - keep the run going
-                errors.append(f"{item.get('external_id', '?')}: {exc}")
-        return inserted, updated, skipped, errors
+                if status in ("inserted", "updated"):
+                    detail_pairs.append((item, instance))
+            return inserted
+        else:
+            detail_pairs.extend(
+                (candidate[0], instance)
+                for candidate, instance in zip(candidates, created)
+            )
+            return len(created)
 
     def _upsert(
         self,
@@ -591,7 +882,6 @@ class BaseScraper(ABC):
         master.items_inserted += run.get("items_inserted", 0)
         master.items_updated += run.get("items_updated", 0)
         master.items_skipped += run.get("items_skipped", 0)
-        master.status = self._worst_status(master.status, run.get("status"))
 
         site_log = self._site_log_for_day(day, site_log_id)
 
@@ -621,6 +911,16 @@ class BaseScraper(ABC):
             bucket["table"] = site_log._meta.model.__name__
             bucket["log_id"] = str(site_log.pk)
             bucket["status"] = site_log.status
+
+        # The master status is the worst across each website's LATEST run — a
+        # site whose most recent scrape failed still fails the day even when
+        # other sites recovered later. Recomputed from the buckets on every
+        # run, so an early failure clears as soon as every site has since
+        # succeeded (the user-facing rule: the day is "success" when the last
+        # scrape of the day got everything).
+        master.status = self._worst_status(
+            *(bucket.get("status") for bucket in master.websites)
+        )
 
         master.save()
         return master

@@ -25,7 +25,14 @@ from django.utils import timezone
 
 from core.models import EthioJobsJob, EthioJobsScrapeLog, ScrapedItem
 
-from .base import BaseScraper, ScrapeError, dig, transform_parse_datetime
+from .base import (
+    DEFAULT_RETRIES,
+    BaseScraper,
+    ScrapeError,
+    dig,
+    request_with_retry,
+    transform_parse_datetime,
+)
 
 DEFAULT_PAGE_SIZE = 10
 DEFAULT_TIMEOUT = 30.0
@@ -35,6 +42,10 @@ class RestJsonScraper(BaseScraper):
     """Paged GET/JSON scraper for REST APIs with a configurable results path."""
 
     site_log_model = EthioJobsScrapeLog
+    #: Per-site detail model + the OneToOne link on ScrapedItem — lets the
+    #: shared batch-save path upsert every detail row in one statement.
+    detail_model = EthioJobsJob
+    detail_fk_field = "ethiojobs_job"
 
     # -- pagination helpers --
 
@@ -62,11 +73,13 @@ class RestJsonScraper(BaseScraper):
     def fetch(self, page: int = 0) -> dict:
         params = self._query_params(page)
 
-        response = httpx.get(
-            self.source.endpoint,
+        response = request_with_retry(
+            httpx.get,
+            url=self.source.endpoint,
             params=params,
             headers=self._request_headers(),
             timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
+            retries=int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES)),
         )
         # Record the request even when it fails — it still hit the API.
         self._record_api_call(page, response.status_code)
@@ -114,6 +127,32 @@ class RestJsonScraper(BaseScraper):
             raise ScrapeError(f"Expected a list at '{results_path}', got {type(items).__name__}")
         return items
 
+    def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
+        """The EthioJobsJob field values for a listing (a faithful mirror of the raw payload)."""
+        raw = item.get("raw_data") or {}
+        company = raw.get("company") or {}
+        return {
+            "api_id": raw.get("id") or "",
+            "title": raw.get("title") or item.get("title") or "",
+            "slug": raw.get("slug") or "",
+            "description": item.get("description") or "",
+            "state": raw.get("state") or item.get("location") or "",
+            "type": raw.get("type"),
+            "level": raw.get("level") or "",
+            "location_type": raw.get("location_type") or "",
+            "published_at": item.get("published_at"),
+            "deadline": transform_parse_datetime(raw.get("date_expiry")),
+            "catalogs": raw.get("catalogs") or [],
+            "company": company,
+            "application_method": raw.get("application_method") or "",
+            "application_email": raw.get("application_email") or "",
+            "career_page_link": raw.get("career_page_link") or "",
+            "application_form": raw.get("application_form"),
+            "raw_payload": raw,
+            "job_number": instance.job_number,
+            "numbered_on": instance.numbered_on,
+        }
+
     def _save_detail(self, item: dict, instance: ScrapedItem) -> None:
         """Create/update the EthioJobsJob detail row and link it to the master.
 
@@ -121,32 +160,9 @@ class RestJsonScraper(BaseScraper):
         so the per-site model is a faithful mirror of the raw response (the
         raw JSON is also kept verbatim in ``raw_payload``).
         """
-        raw = item.get("raw_data") or {}
-        company = raw.get("company") or {}
-
         ethiojobs, _ = EthioJobsJob.objects.update_or_create(
             external_id=instance.external_id,
-            defaults={
-                "api_id": raw.get("id") or "",
-                "title": raw.get("title") or item.get("title") or "",
-                "slug": raw.get("slug") or "",
-                "description": item.get("description") or "",
-                "state": raw.get("state") or item.get("location") or "",
-                "type": raw.get("type"),
-                "level": raw.get("level") or "",
-                "location_type": raw.get("location_type") or "",
-                "published_at": item.get("published_at"),
-                "deadline": transform_parse_datetime(raw.get("date_expiry")),
-                "catalogs": raw.get("catalogs") or [],
-                "company": company,
-                "application_method": raw.get("application_method") or "",
-                "application_email": raw.get("application_email") or "",
-                "career_page_link": raw.get("career_page_link") or "",
-                "application_form": raw.get("application_form"),
-                "raw_payload": raw,
-                "job_number": instance.job_number,
-                "numbered_on": instance.numbered_on,
-            },
+            defaults=self._detail_defaults(item, instance),
         )
         if instance.ethiojobs_job_id != ethiojobs.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(ethiojobs_job=ethiojobs)
