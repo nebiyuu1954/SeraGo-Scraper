@@ -1,0 +1,19 @@
+# SeraGo Django admin dashboard (optional — installed when WITH_ADMIN=1).
+# Serves /admin/ on port 8000 so you can watch scrape logs in a browser.
+# __APP_USER__ and __APP_DIR__ are patched in by deploy/setup_vm.sh.
+[Unit]
+Description=SeraGo Django admin dashboard (gunicorn)
+After=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+# Force production mode for the dashboard regardless of .env.
+Environment=DJANGO_DEBUG=false
+ExecStart=__APP_DIR__/.venv/bin/gunicorn serago.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

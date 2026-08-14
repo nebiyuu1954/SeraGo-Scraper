@@ -12,3 +12,6 @@ redis>=5.0
 
 # PostgreSQL driver (SQLite used for local dev/tests)
 psycopg[binary]>=3.1
+
+# Serves Django static files (admin) in production on the free VM.
+whitenoise>=6.6

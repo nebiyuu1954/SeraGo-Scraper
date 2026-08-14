@@ -1,0 +1,19 @@
+# SeraGo scraper schedule.
+#
+# The VM timezone is set to Africa/Addis_Ababa by setup_vm.sh, so OnCalendar
+# times below are Addis Ababa local time.
+#
+# Current schedule: midday and 30 minutes before midnight (12:00 & 23:30).
+OnCalendar=*-*-* 12:00,23:30
+#
+# FUTURE — every 30 minutes: replace the OnCalendar line above with
+#   OnCalendar=*-*-* *:00,30:00
+# then run:
+#   sudo systemctl daemon-reload && sudo systemctl restart serago-scrape.timer
+#
+# Persistent=true runs a missed run right after boot (e.g. the VM was stopped).
+Persistent=true
+Unit=serago-scrape.service
+
+[Install]
+WantedBy=timers.target

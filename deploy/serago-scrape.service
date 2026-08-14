@@ -1,0 +1,16 @@
+# SeraGo — one scrape of every active source (invoked by serago-scrape.timer).
+# __APP_USER__ and __APP_DIR__ are patched in by deploy/setup_vm.sh.
+[Unit]
+Description=SeraGo — scrape all job sources (single run)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__APP_USER__
+WorkingDirectory=__APP_DIR__
+# Secrets come from .env — settings.py loads it with python-dotenv.
+ExecStart=__APP_DIR__/.venv/bin/python manage.py scrape_all
+
+[Install]
+WantedBy=multi-user.target
