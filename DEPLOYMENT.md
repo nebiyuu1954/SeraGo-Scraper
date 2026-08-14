@@ -35,7 +35,7 @@ Key choices (and why):
 
 | Decision | Choice | Why |
 |---|---|---|
-| Scheduler | **systemd timer on a VM** | Free forever, reliable, works for every-30-min. GitHub Actions `schedule` is unreliable on free **private** repos. Celery/Redis would need an always-on process + paid Redis — overkill. |
+| Scheduler | **systemd timer on a VM** — or **GitHub Actions** if you have no credit card (see §2b) | systemd timer: free forever, reliable, works for every-30-min. GitHub Actions `schedule` is disabled on free **private** repos but works on **public** ones. Celery/Redis would need an always-on process + paid Redis — overkill. |
 | VM | **Oracle Cloud Always Free** (primary) / **GCP e2-micro** (backup) | Both genuinely $0/month, no sleep, no time limits. |
 | DB | **Neon** (already done) | Shared with the .NET backend; each run only uses a few minutes of the free compute budget. |
 | How often | **12:00 & 23:30 Addis Ababa time** | Your choice: mid-day and 30 minutes before midnight. One line to change later. |
@@ -57,11 +57,35 @@ failure — exactly what a timer wants.
   dashboard's "Active time" if you go to 30 minutes with slow sites.
 - **Everything else**: systemd, gunicorn, whitenoise — free open source.
 
-> Why not GitHub Actions? Free personal accounts effectively disable
-> `schedule` events on **private** repos (a known limitation), and private
-> repos only get 2,000 runner-minutes/month — a 30-minute cadence would burn
-> ~7,000. A VM has no such limits. GitHub stays in the picture just as the
-> code host.
+> Why not GitHub Actions (private repo)? Free personal accounts effectively
+> disable `schedule` events on **private** repos (a known limitation), and
+> private repos only get 2,000 runner-minutes/month — a 30-minute cadence
+> would burn ~7,000. **Public** repos are unlimited. See §2b below.
+
+### 2b. No credit card? Use GitHub Actions (repo goes public)
+
+GCP/Oracle signup asks for a credit or debit card for identity verification,
+so a prepaid card often blocks the VM path. If that's the case, the cleanest
+free route is GitHub Actions on a **public** repo — no card, no servers:
+
+- The workflow (`.github/workflows/scrape.yml`) is already committed: it runs
+  `migrate` → `seed_sources` → `scrape_all` on a cron schedule and reads all
+  secrets from GitHub **Actions secrets** (Settings → Secrets → Actions).
+- Schedule (cron is UTC; Addis = UTC+3): `0 9 * * *` + `30 20 * * *` =
+  12:00 & 23:30 Addis. Switch to every 30 min later by replacing both
+  entries with `*/30 * * * *`.
+- **To go live:** 1) make the repo public (Settings → General → Danger
+  Zone → Change visibility); 2) add the secrets (DB_* from Neon,
+  `DJANGO_SECRET_KEY`, `ETHIOJOBS_TOKEN`, optional `JINA_API_KEY`);
+  3) push the workflow file — the first run fires on the next schedule or
+  via the **Run workflow** button (Actions tab).
+- This repo is safe to make public: `.env` was never committed, and the
+  only `eyJ...` strings in the repo are EthioJobs' per-request encrypted
+  job IDs in fixture data — not tokens. The real `ETHIOJOBS_TOKEN` lives
+  only in Actions secrets.
+- Caveats: code becomes visible/forkable; scheduled workflows pause after
+  60 days with no repo activity (normal commits reset the clock); runs can
+  be queued a few minutes late (fine for a scraper).
 
 ---
 

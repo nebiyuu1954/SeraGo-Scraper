@@ -15,5 +15,11 @@ media/
 # Secrets & local config
 .env
 
+# Local backups of files removed from the repo (admin user fixture, pre-Neon DB)
+.backups/
+data.json
+db.sqlite3.pre-neon.bak
+fixtures/auth.User.json
+
 # Logs
 *.log

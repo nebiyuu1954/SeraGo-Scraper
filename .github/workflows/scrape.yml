@@ -1,0 +1,63 @@
+# SeraGo — scheduled scraper via GitHub Actions.
+#
+# Runs `manage.py scrape_all` on GitHub's free runners and writes to the
+# shared Neon PostgreSQL database.
+#
+# IMPORTANT — schedule on free plans:
+#   * Works on PUBLIC repositories (unlimited runner minutes).
+#   * Schedule events are effectively DISABLED on free PRIVATE repos — if
+#     this repo is private, only the manual "Run workflow" button will work.
+#
+# Schedule (cron is in UTC; Addis Ababa = UTC+3):
+#   Current:  0 9 * * *     = 09:00 UTC = 12:00  Addis time
+#             30 20 * * *   = 20:30 UTC = 23:30  Addis time
+#   FUTURE:   every 30 min → replace both entries with:  */30 * * * *
+#   Note: GitHub disables scheduled workflows after 60 days with no repo
+#   activity (any push resets the clock — normal development covers this).
+#
+# Secrets to add (repo Settings → Secrets and variables → Actions):
+#   DB_ENGINE=django.db.backends.postgresql
+#   DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5432   (from Neon)
+#   DJANGO_SECRET_KEY, ETHIOJOBS_TOKEN, JINA_API_KEY (optional)
+name: SeraGo scheduled scrape
+
+on:
+  schedule:
+    - cron: "0 9 * * *"      # 09:00 UTC = 12:00 Addis Ababa
+    - cron: "30 20 * * *"    # 20:30 UTC = 23:30 Addis Ababa
+  workflow_dispatch: {}       # manual "Run workflow" button
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DB_ENGINE: ${{ secrets.DB_ENGINE }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      DJANGO_DEBUG: "false"
+      ETHIOJOBS_TOKEN: ${{ secrets.ETHIOJOBS_TOKEN }}
+      JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply migrations
+        run: python manage.py migrate
+
+      - name: Seed source configurations
+        run: python manage.py seed_sources
+
+      - name: Scrape all sources
+        run: python manage.py scrape_all
