@@ -300,7 +300,10 @@ GEEZJOBS_PAGINATION = {
 # batch), so the strict today-only filter truthfully stores nothing on
 # non-posting days and captures each new batch on posting days. The site is
 # behind Cloudflare — a challenge page (no cards, no archive container)
-# raises ScrapeError instead of silently recording an empty feed.
+# raises ScrapeError instead of silently recording an empty feed. Cloudflare
+# also 403s requests from datacenter/runner IPs (GitHub Actions, cloud
+# VMs) outright, so like GeezJobs the source fetches through the free
+# r.jina.ai relay (pagination.relay below) — see HtmlScraper._relay_url/fetch.
 REPORTER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -330,12 +333,18 @@ REPORTER_PAGINATION = {
     # page 2 is /jobs-in-ethiopia/page/2/ (page_style="path" in HtmlScraper).
     "page_1_based": True,
     "page_style": "path",
+    # Fetch through the free r.jina.ai relay: Cloudflare 403s direct requests
+    # from datacenter/runner IPs (GitHub Actions runners, cloud VMs) — same
+    # fix that keeps GeezJobs scraping. The relay adds latency, so the timeout
+    # is raised to 60s. Set JINA_API_KEY (settings/.env) for the free tier's
+    # higher request limits.
+    "relay": "jina",
+    "timeout": 60.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
     # no items posted today (exact timestamps from the <time datetime> attrs).
     "date_filter": {"field": "published_at"},
     "max_pages": 100,
-    "timeout": 30.0,
 }
 
 
