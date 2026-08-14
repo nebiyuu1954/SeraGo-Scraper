@@ -11,7 +11,7 @@ User=__APP_USER__
 WorkingDirectory=__APP_DIR__
 # Force production mode for the dashboard regardless of .env.
 Environment=DJANGO_DEBUG=false
-ExecStart=__APP_DIR__/.venv/bin/gunicorn serago.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120
+ExecStart=__APP_DIR__/.venv/bin/gunicorn serago.wsgi:application --bind 0.0.0.0:8000 --workers __GUNICORN_WORKERS__ --timeout 120
 Restart=on-failure
 RestartSec=5
 

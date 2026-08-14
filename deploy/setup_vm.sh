@@ -19,6 +19,8 @@
 #   TIMEZONE    VM timezone (default: Africa/Addis_Ababa — the schedule below
 #               is written in local time, so keep this)
 #   WITH_ADMIN  1 to also run the admin dashboard (gunicorn, port 8000)
+#   GUNICORN_WORKERS  gunicorn workers for the admin (default: 2; use 1 on
+#               a small 1 GB VM like GCP e2-micro)
 # =============================================================================
 set -euo pipefail
 
@@ -112,8 +114,11 @@ if [ "${WITH_ADMIN}" = "1" ]; then
     echo "==> [7b/8] Admin dashboard (gunicorn, port 8000)"
     ./.venv/bin/pip install --quiet gunicorn
     ./.venv/bin/python manage.py collectstatic --noinput
+    # e2-micro (GCP free tier, 1 GB RAM): set GUNICORN_WORKERS=1.
+    GUNICORN_WORKERS="${GUNICORN_WORKERS:-2}"
     sed -e "s|__APP_USER__|${APP_USER}|g" \
         -e "s|__APP_DIR__|${APP_DIR}|g" \
+        -e "s|__GUNICORN_WORKERS__|${GUNICORN_WORKERS}|g" \
         "${APP_DIR}/deploy/serago-admin.service" \
         | sudo tee /etc/systemd/system/serago-admin.service > /dev/null
     sudo systemctl daemon-reload

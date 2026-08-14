@@ -86,12 +86,30 @@ failure — exactly what a timer wants.
    Networking → Security Lists. (Safer alternative: leave it closed and use
    an SSH tunnel.)
 
-**Option B — Google Cloud:**
+**Option B — Google Cloud (e2-micro):**
 
-1. <https://cloud.google.com/free> → create a project, enable Compute Engine.
-2. Create a VM: **e2-micro** in `us-central1` / `us-east1` / `us-west1`,
-   Ubuntu 24.04, 30 GB disk (always-free eligible).
-3. Note the external IP and your SSH access.
+1. Sign up at <https://cloud.google.com/free> (card needed for identity
+   verification; you get a $300 trial credit AND the always-free e2-micro —
+   the e2-micro stays free after the trial ends as long as you stay within
+   the free limits).
+2. Create a project, then enable the **Compute Engine API**.
+3. Compute Engine → VM instances → **Create instance**:
+   - Name anything; region **us-central1** (or us-east1 / us-west1 — the
+     free e2-micro only exists in these three).
+   - Machine type: **e2-micro** (free tier; 2 shared vCPU / 1 GB RAM).
+   - Boot disk: **Ubuntu 24.04**, size **30 GB**, type **Standard persistent
+     disk** (standard disk ≤ 30 GB is what the free tier covers — an SSD
+     boot disk would cost money).
+4. SSH: use the **SSH button in the console** — no key files to manage.
+5. Run the exact same setup script as Oracle:
+   `bash <(curl -s https://raw.githubusercontent.com/nebiyuu1954/SeraGo-Scraper/main/deploy/setup_vm.sh)`
+6. To reach the admin dashboard from the internet, add a firewall rule
+   allowing TCP **8000** (VPC network → Firewall), or just use an SSH tunnel.
+
+   e2-micro notes: 1 GB RAM is plenty for the twice-daily sweep (and even
+   every-30-min runs — each run is a short-lived process). If you install the
+   admin dashboard too, use `GUNICORN_WORKERS=1`:
+   `WITH_ADMIN=1 GUNICORN_WORKERS=1 bash setup_vm.sh`
 
 ### Step 2 — Run the setup script (idempotent)
 
