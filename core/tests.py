@@ -1995,18 +1995,43 @@ class TelegramReportTests(TestCase):
     def test_daily_mode_sends_digest_at_end_of_day(self):
         ScrapeLog.objects.create(day=self.TODAY)
         fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)  # past 20:30 UTC
+        fake_run = mock.Mock(returncode=0, stdout="Ran 85 tests in 1.234s\n\nOK\n", stderr="")
         with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
             "core.management.commands.telegram_report.timezone.now",
             return_value=fixed,
+        ), mock.patch(
+            "core.management.commands.telegram_report.subprocess.run",
+            return_value=fake_run,
         ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
         fake_post.assert_called_once()
         # The digest is the FULL day report (day status + per-website totals +
-        # issues), not just the last run — the header makes that explicit.
+        # issues) plus the test suite stats — not just the last run.
         text = fake_post.call_args.kwargs["json"]["text"]
-        self.assertIn("full day report", text)
-        self.assertIn("status: success", text)
-        self.assertIn("items: found=", text)
+        self.assertIn("Full Day Report", text)
+        self.assertIn("SUCCESS", text)
+        self.assertIn("found   :", text)
+        self.assertIn("🧪 Tests", text)
+        self.assertIn("85 passed", text)
+
+    def test_digest_skips_tests_with_flag(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ), mock.patch(
+            "core.management.commands.telegram_report.subprocess.run"
+        ) as fake_run:
+            call_command(
+                "telegram_report",
+                "--skip-tests",
+                day=self.TODAY,
+                stdout=io.StringIO(),
+            )
+        fake_post.assert_called_once()
+        fake_run.assert_not_called()
+        self.assertNotIn("🧪 Tests", fake_post.call_args.kwargs["json"]["text"])
 
     def test_force_sends_even_when_daily_mode_would_stay_quiet(self):
         ScrapeLog.objects.create(day=self.TODAY)

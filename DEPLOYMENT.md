@@ -273,6 +273,13 @@ command (`core/management/commands/telegram_report.py`) decides the digest
 by comparing the current time to it, and flags a message with `⚠️` when the
 day has failed runs or non-200 responses.
 
+The digest message is the **full day report** — day status, run/website/api
+totals, per-website found/inserted/skipped, and every failure — and on that
+final run it also runs the Django test suite once and includes the result
+(test count, pass/fail, duration), so the end-of-day message doubles as a
+daily health check of the structure snapshots. Disable with
+`manage.py telegram_report --skip-tests`.
+
 ---
 
 ## 6. Watch-items (all free-tier limits)
