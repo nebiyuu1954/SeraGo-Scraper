@@ -19,6 +19,14 @@
 #   DB_ENGINE=django.db.backends.postgresql
 #   DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5432   (from Neon)
 #   DJANGO_SECRET_KEY, ETHIOJOBS_TOKEN, JINA_API_KEY (optional)
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  (optional — sends the report to
+#     your Telegram after every run; see DEPLOYMENT.md §5b)
+#
+# Notification settings (repo Settings → Variables, or defaults):
+#   NOTIFY_MODE      per-run (default) | daily  — daily = only failures +
+#                    one end-of-day digest (for the every-30-min future)
+#   DAILY_DIGEST_UTC 20:30 (default) — HH:MM UTC of the final run of the day
+#                    (20:30 UTC = 23:30 Addis time)
 name: SeraGo scheduled scrape
 
 on:
@@ -42,6 +50,10 @@ jobs:
       DJANGO_DEBUG: "false"
       ETHIOJOBS_TOKEN: ${{ secrets.ETHIOJOBS_TOKEN }}
       JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      NOTIFY_MODE: ${{ vars.NOTIFY_MODE || 'per-run' }}
+      DAILY_DIGEST_UTC: ${{ vars.DAILY_DIGEST_UTC || '20:30' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,3 +73,9 @@ jobs:
 
       - name: Scrape all sources
         run: python manage.py scrape_all
+
+      - name: Send Telegram report
+        # Runs even when scrape_all fails (if: always()) so failures get
+        # reported — that's the whole point of the notification.
+        if: always()
+        run: python manage.py telegram_report

@@ -10,6 +10,7 @@ Covers the three things that matter when running several scrapers:
 """
 import io
 import json
+import os
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1940,3 +1941,81 @@ class ScrapeAllCommandTests(TestCase):
         # warning (and its slug never reached scrape_source).
         fake_call.assert_called_once_with("scrape_source", "afriwork")
         self.assertIn("inactive", out.getvalue())
+
+
+class TelegramReportTests(TestCase):
+    """Notification command: per-run always sends; daily mode only on
+    failure or at the end-of-day digest time."""
+
+    TODAY = "2026-08-15"
+
+    def _env(self, **extra):
+        base = {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "987"}
+        base.update(extra)
+        return mock.patch.dict(os.environ, base)
+
+    def _post(self):
+        return mock.patch("core.management.commands.telegram_report.httpx.post")
+
+    def test_missing_credentials_skips_without_error(self):
+        with self._post() as fake_post, mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            call_command("telegram_report", stdout=io.StringIO())
+        fake_post.assert_not_called()
+
+    def test_per_run_mode_sends_report(self):
+        with self._post() as fake_post, self._env():
+            call_command("telegram_report", stdout=io.StringIO())
+        fake_post.assert_called_once()
+        payload = fake_post.call_args.kwargs["json"]
+        self.assertEqual(payload["chat_id"], "987")
+        self.assertIn("SeraGo", payload["text"])
+
+    def test_daily_mode_suppresses_healthy_run_before_digest(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)  # before 20:30 UTC
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        fake_post.assert_not_called()
+
+    def test_daily_mode_sends_on_failure(self):
+        ScrapeLog.objects.create(day=self.TODAY, status=ScrapeStatus.FAILED)
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        fake_post.assert_called_once()
+
+    def test_daily_mode_sends_digest_at_end_of_day(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)  # past 20:30 UTC
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        fake_post.assert_called_once()
+        # The digest is the FULL day report (day status + per-website totals +
+        # issues), not just the last run — the header makes that explicit.
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("full day report", text)
+        self.assertIn("status: success", text)
+        self.assertIn("items: found=", text)
+
+    def test_force_sends_even_when_daily_mode_would_stay_quiet(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command(
+                "telegram_report", "--force", day=self.TODAY, stdout=io.StringIO()
+            )
+        fake_post.assert_called_once()

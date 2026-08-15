@@ -235,6 +235,46 @@ master log simply records more runs.
 
 ---
 
+## 5b. Get notified on Telegram (free, recommended)
+
+After every scrape you get the `log_report` summary delivered to your phone
+via a Telegram bot — no need to open the Actions tab. Works for both
+deployment paths: the GitHub Actions workflow already calls
+`manage.py telegram_report` after each run (`if: always()`, so it also
+fires when a run fails — that's the point).
+
+**One-time setup (~5 min, all in the Telegram app + GitHub):**
+
+1. In Telegram, open **@BotFather** → `/newbot` → pick a name (e.g.
+   `SeraGo Alerts`) → copy the **token** it gives you.
+2. Message your new bot once (anything, e.g. `/start`), then open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser — your
+   numeric **chat id** is in the JSON under `message.chat.id`.
+3. GitHub → repo → **Settings → Secrets and variables → Actions** → add
+   two secrets:
+   - `TELEGRAM_BOT_TOKEN` = the token from step 1
+   - `TELEGRAM_CHAT_ID` = the chat id from step 2
+4. Click **Run workflow** in the Actions tab — you should get the first
+   report within a couple of minutes.
+
+**How it notifies (two modes, configurable without touching code):**
+
+| Mode (`NOTIFY_MODE`) | Behavior | When to use |
+|---|---|---|
+| `per-run` (default) | Report after **every** run (2/day now) | Today |
+| `daily` | Only **failures** + one **end-of-day digest** on the final run | When you move to every-30-min (no spam) |
+
+To switch later: repo → Settings → Secrets and variables → **Variables** →
+set `NOTIFY_MODE=daily` (and `DAILY_DIGEST_UTC=20:30` if your last run's
+UTC time differs — 20:30 UTC = 23:30 Addis). No code change, no push.
+
+`DAILY_DIGEST_UTC` is the UTC time of the day's final scheduled run; the
+command (`core/management/commands/telegram_report.py`) decides the digest
+by comparing the current time to it, and flags a message with `⚠️` when the
+day has failed runs or non-200 responses.
+
+---
+
 ## 6. Watch-items (all free-tier limits)
 
 1. **Neon compute hours** — fine today; keep an eye on "Active time" if you
