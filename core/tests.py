@@ -1940,3 +1940,10 @@ class ScrapeAllCommandTests(TestCase):
         # warning (and its slug never reached scrape_source).
         fake_call.assert_called_once_with("scrape_source", "afriwork")
         self.assertIn("inactive", out.getvalue())
+
+
+class SeedSourcesCommandTests(TestCase):
+    def test_seed_sources_sets_reporterjobs_to_jina_relay(self):
+        call_command("seed_sources", stdout=io.StringIO())
+        reporter = Source.objects.get(slug="reporterjobs")
+        self.assertEqual((reporter.pagination or {}).get("relay"), "jina")
