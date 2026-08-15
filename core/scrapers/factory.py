@@ -14,7 +14,7 @@ from core.models import ScraperType, Source
 
 from .base import BaseScraper
 from .geezjobs import GeezJobsScraper
-from .graphql import GraphQLScraper
+from .graphql import AfriworkJobsScraper, GraphQLScraper
 from .hahujobs import HaHuJobsScraper
 from .html import HtmlScraper
 from .reporterjobs import ReporterJobsScraper
@@ -34,6 +34,7 @@ class ScraperFactory:
     #: second GraphQL site (or second REST/HTML site) with its own per-site
     #: detail/log models registers its scraper class here.
     _slug_registry: dict[str, type[BaseScraper]] = {
+        "afriwork": AfriworkJobsScraper,
         "hahujobs": HaHuJobsScraper,
         "geezjobs": GeezJobsScraper,
         "reporterjobs": ReporterJobsScraper,

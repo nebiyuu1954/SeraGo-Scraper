@@ -172,3 +172,18 @@ class GraphQLScraper(BaseScraper):
         if not isinstance(items, list):
             raise ScrapeError(f"Expected a list at '{results_path}', got {type(items).__name__}")
         return items
+
+
+class AfriworkJobsScraper(GraphQLScraper):
+    """Afriwork — GraphQL site. Adds the listing detail URL to the master row.
+
+    The API payload has no URL field, but the site's job pages live at
+    ``https://afriworket.com/jobs/<id>`` (the API's own opaque job id —
+    verified against live URLs). Registered per-slug in the factory.
+    """
+
+    def normalize(self, raw_item: dict) -> dict:
+        item = super().normalize(raw_item)
+        if not item.get("url") and raw_item.get("id"):
+            item["url"] = f"https://afriworket.com/jobs/{raw_item['id']}"
+        return item

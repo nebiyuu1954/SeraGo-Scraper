@@ -133,9 +133,11 @@ class ScrapedItem(TimeStampedModel):
     content_hash = models.CharField(
         max_length=64,
         db_index=True,
-        help_text="SHA-256 of title|company|location|job_type.",
+        help_text="SHA-256 of title|company|location|job_type|url.",
     )
-    raw_data = models.JSONField(default=dict, blank=True, help_text="Original payload for this item.")
+    # NOTE: the verbatim payload is NOT stored here — each per-site detail
+    # row (e.g. AfriworkJob.raw_payload) keeps its own copy. The old master
+    # raw_data column was removed because it duplicated that payload.
     published_at = models.DateTimeField(null=True, blank=True, db_index=True)
     deadline = models.DateTimeField(null=True, blank=True)
     first_seen_at = models.DateTimeField(auto_now_add=True)

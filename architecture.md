@@ -103,9 +103,11 @@ Everything about *how* to scrape a website lives here, not in code:
 ### `ScrapedItem` — the universal listing
 `source` FK, `external_id`, `title`, `description`, `company`, `location`,
 `job_type`, `url`, `salary`, `content_hash` (SHA-256 dedup fingerprint),
-`raw_data` (verbatim payload), `published_at`, `deadline`, `first_seen_at`,
+`published_at`, `deadline`, `first_seen_at`,
 `last_seen_at`, `is_active`, per-day `job_number` + `numbered_on`, and a
-`OneToOneField` per website detail model.
+`OneToOneField` per website detail model. The verbatim payload is not
+duplicated on the master row — it lives only in each per-site row's
+`raw_payload`.
 
 Unique constraints: `(source, external_id)` and `(source, numbered_on,
 job_number)`.

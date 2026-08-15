@@ -407,12 +407,19 @@ class BaseScraper(ABC):
         return normalized
 
     def content_hash(self, item: dict) -> str:
-        """Dedup fingerprint: SHA-256 of title|company|location|job_type."""
+        """Dedup fingerprint: SHA-256 of title|company|location|job_type|url.
+
+        ``url`` is part of the fingerprint so a listing whose detail URL
+        appears (or changes) later is picked up by the next scrape and the
+        master row gets updated — that's how existing rows get backfilled
+        with URLs once a source starts setting them (Afriwork/EthioJobs).
+        """
         return sha256_hex(
             item.get("title"),
             item.get("company"),
             item.get("location"),
             item.get("job_type"),
+            item.get("url"),
         )
 
     @staticmethod
@@ -533,10 +540,15 @@ class BaseScraper(ABC):
                     raise ScrapeError("Item is missing 'external_id'")
 
                 content_hash = self.content_hash(item)
+                # ``raw_data`` stays on the in-memory item (per-site scrapers
+                # read it to build their own ``raw_payload``) but is NOT
+                # persisted to the master row anymore: the verbatim payload
+                # already lives in each per-site row, so the master copy was
+                # pure duplication (see models.ScrapedItem).
                 defaults = {
                     key: value
                     for key, value in item.items()
-                    if key not in ("external_id",) and value is not None
+                    if key not in ("external_id", "raw_data") and value is not None
                 }
                 defaults["content_hash"] = content_hash
                 candidates.append((item, external_id, content_hash, defaults))

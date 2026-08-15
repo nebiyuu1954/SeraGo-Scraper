@@ -127,6 +127,16 @@ class RestJsonScraper(BaseScraper):
             raise ScrapeError(f"Expected a list at '{results_path}', got {type(items).__name__}")
         return items
 
+    def normalize(self, raw_item: dict) -> dict:
+        item = super().normalize(raw_item)
+        # The API payload has no detail URL, but the site's job pages live at
+        # https://www.ethiojobs.net/jobs/<slug> — the same slug used as the
+        # dedup external_id (verified against the site's own URLs).
+        slug = raw_item.get("slug") or item.get("external_id")
+        if not item.get("url") and slug:
+            item["url"] = f"https://www.ethiojobs.net/jobs/{slug}"
+        return item
+
     def _detail_defaults(self, item: dict, instance: ScrapedItem) -> dict:
         """The EthioJobsJob field values for a listing (a faithful mirror of the raw payload)."""
         raw = item.get("raw_data") or {}
