@@ -2019,3 +2019,10 @@ class TelegramReportTests(TestCase):
                 "telegram_report", "--force", day=self.TODAY, stdout=io.StringIO()
             )
         fake_post.assert_called_once()
+
+
+class SeedSourcesCommandTests(TestCase):
+    def test_seed_sources_sets_reporterjobs_to_jina_relay(self):
+        call_command("seed_sources", stdout=io.StringIO())
+        reporter = Source.objects.get(slug="reporterjobs")
+        self.assertEqual((reporter.pagination or {}).get("relay"), "jina")
