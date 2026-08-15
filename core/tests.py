@@ -38,6 +38,7 @@ from core.models import (
     ScrapedItem,
     Source,
 )
+from core.management.commands.telegram_report import Command as TelegramReportCommand
 from core.reporting import api_issues_for_day
 from core.scrapers.base import ScrapeError, transform_job_type_code
 from core.scrapers.geezjobs import GeezJobsScraper
@@ -1950,7 +1951,17 @@ class TelegramReportTests(TestCase):
     TODAY = "2026-08-15"
 
     def _env(self, **extra):
-        base = {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "987"}
+        # Pin every notification env var explicitly so the tests don't depend
+        # on (or leak from) the surrounding process environment — e.g. the
+        # digest command spawns `manage.py test` as a subprocess that inherits
+        # the runner's env, and DAILY_DIGEST_UTC/NOTIFY_MODE must not change
+        # what these tests expect.
+        base = {
+            "TELEGRAM_BOT_TOKEN": "123:abc",
+            "TELEGRAM_CHAT_ID": "987",
+            "NOTIFY_MODE": "per-run",
+            "DAILY_DIGEST_UTC": "20:30",
+        }
         base.update(extra)
         return mock.patch.dict(os.environ, base)
 
@@ -1993,7 +2004,21 @@ class TelegramReportTests(TestCase):
         fake_post.assert_called_once()
 
     def test_daily_mode_sends_digest_at_end_of_day(self):
-        ScrapeLog.objects.create(day=self.TODAY)
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            websites=[
+                {
+                    "source": "afriwork",
+                    "name": "Afriwork (Freelance Ethiopia)",
+                    "status": "success",
+                    "run_count": 1,
+                    "api_hits": 2,
+                    "items_found": 8,
+                    "items_inserted": 7,
+                    "items_skipped": 1,
+                }
+            ],
+        )
         fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)  # past 20:30 UTC
         fake_run = mock.Mock(returncode=0, stdout="Ran 85 tests in 1.234s\n\nOK\n", stderr="")
         with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
@@ -2013,6 +2038,26 @@ class TelegramReportTests(TestCase):
         self.assertIn("found   :", text)
         self.assertIn("🧪 Tests", text)
         self.assertIn("85 passed", text)
+        # The user-requested per-website layout: name on one line, stats under
+        # it prefixed with =>.
+        self.assertIn("✅ Afriwork (Freelance Ethiopia)", text)
+        self.assertIn("=> api 2 · found 8 · inserted 7 · skipped 1", text)
+
+    def test_run_tests_parses_stderr_summary(self):
+        # Django's test runner writes the summary ("Ran N tests ... OK") to
+        # stderr, not stdout — the digest must find it there.
+        fake_run = mock.Mock(
+            returncode=0,
+            stdout="Found 87 test(s).\nSystem check identified no issues (0 silenced).\n",
+            stderr="Ran 87 tests in 3.5s\n\nOK\nDestroying test database...\n",
+        )
+        with mock.patch(
+            "core.management.commands.telegram_report.subprocess.run",
+            return_value=fake_run,
+        ):
+            result = TelegramReportCommand()._run_tests()
+        self.assertIn("87 passed", result)
+        self.assertNotIn("FAILED", result)
 
     def test_digest_skips_tests_with_flag(self):
         ScrapeLog.objects.create(day=self.TODAY)

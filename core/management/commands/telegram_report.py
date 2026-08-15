@@ -157,17 +157,13 @@ class Command(BaseCommand):
         if websites:
             lines.append("")
             lines.append("🌐 Websites")
-            name_width = min(
-                max(max(len(w.get("name") or w.get("source") or "") for w in websites), 8),
-                26,
-            )
             for w in websites:
-                name = (w.get("name") or w.get("source") or "").ljust(name_width)
+                name = w.get("name") or w.get("source") or ""
                 wicon = "✅" if w.get("status") == ScrapeStatus.SUCCESS else "⚠️"
+                lines.append(f"{wicon} {name}")
                 lines.append(
-                    f"{wicon} {name}  api {w.get('api_hits', 0)} · "
-                    f"found {w.get('items_found', 0)} · inserted {w.get('items_inserted', 0)} · "
-                    f"skipped {w.get('items_skipped', 0)}"
+                    f"=> api {w.get('api_hits', 0)} · found {w.get('items_found', 0)} · "
+                    f"inserted {w.get('items_inserted', 0)} · skipped {w.get('items_skipped', 0)}"
                 )
 
         if issues:
@@ -212,7 +208,9 @@ class Command(BaseCommand):
         elapsed = int(time.monotonic() - started)
         duration = f"{elapsed // 60}m {elapsed % 60:02d}s" if elapsed >= 60 else f"{elapsed}s"
 
-        output = proc.stdout or ""
+        # Django's test runner writes the progress dots and the summary
+        # ("Ran N tests ... OK") to STDERR, so search both streams.
+        output = (proc.stdout or "") + (proc.stderr or "")
         match = re.search(r"Ran (\d+) tests?", output)
         count = match.group(1) if match else "?"
 
