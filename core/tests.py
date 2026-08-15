@@ -1943,6 +1943,108 @@ class ScrapeAllCommandTests(TestCase):
         fake_call.assert_called_once_with("scrape_source", "afriwork")
         self.assertIn("inactive", out.getvalue())
 
+    def test_scrape_all_records_one_sweep_entry_per_run(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", return_value=None
+        ):
+            call_command("scrape_all", stdout=io.StringIO())
+            call_command("scrape_all", stdout=io.StringIO())
+
+        # Each overall sweep appends ONE short entry; per-site detail is NOT
+        # duplicated here (it lives in the site's own day log).
+        master = ScrapeLog.objects.get()
+        self.assertEqual(len(master.runs), 2)
+        self.assertEqual(master.runs[0]["run"], 1)
+        self.assertEqual(master.runs[1]["run"], 2)
+        for entry in master.runs:
+            self.assertEqual(
+                set(entry),
+                {"run", "time", "hits", "found", "inserted", "updated", "skipped", "status"},
+            )
+            self.assertEqual(entry["status"], "success")
+            self.assertEqual(entry["hits"], 0)
+            self.assertRegex(entry["time"], r"^\d{2}:\d{2}$")
+
+    def test_scrape_all_sweep_entry_flags_failed_runs(self):
+        Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        Source.objects.create(
+            slug="geezjobs", name="GeezJobs", endpoint="https://example.com/3",
+            is_active=True,
+        )
+
+        def fake_call(command, *args, **kwargs):
+            if args[0] == "geezjobs":
+                raise RuntimeError("boom")
+
+        out = io.StringIO()
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", side_effect=fake_call
+        ):
+            with self.assertRaises(SystemExit):
+                call_command("scrape_all", stdout=out)
+
+        master = ScrapeLog.objects.get()
+        self.assertEqual(len(master.runs), 1)
+        self.assertEqual(master.runs[0]["status"], "failed")
+
+    def test_scrape_all_sweep_entry_sums_site_run_totals(self):
+        # A site's just-written run (per-site day log) feeds the sweep totals.
+        source = Source.objects.create(
+            slug="afriwork", name="Afriwork", endpoint="https://example.com/1",
+            is_active=True,
+        )
+        AfriworkScrapeLog.objects.create(
+            source=source,
+            day=timezone.localdate(),
+            status=ScrapeStatus.SUCCESS,
+            run_count=1,
+            api_hits=2,
+            items_found=3,
+            items_inserted=1,
+            items_updated=1,
+            items_skipped=1,
+            scraped_log=[
+                {
+                    "status": "success",
+                    "api_hits": 2,
+                    "items_found": 3,
+                    "items_inserted": 1,
+                    "items_updated": 1,
+                    "items_skipped": 1,
+                    "started_at": "2026-08-15T09:00:05+00:00",
+                    "pages_hit": [],
+                    "errors": [],
+                }
+            ],
+        )
+        with mock.patch(
+            "core.management.commands.scrape_all.call_command", return_value=None
+        ):
+            call_command("scrape_all", stdout=io.StringIO())
+
+        master = ScrapeLog.objects.get()
+        entry = master.runs[0]
+        self.assertEqual(entry["hits"], 2)
+        self.assertEqual(entry["found"], 3)
+        self.assertEqual(entry["inserted"], 1)
+        self.assertEqual(entry["updated"], 1)
+        self.assertEqual(entry["skipped"], 1)
+        self.assertEqual(entry["status"], "success")
+        # Started 09:00 UTC = 12:00 Addis Ababa (the configured TIME_ZONE).
+        self.assertEqual(
+            entry["time"],
+            timezone.localtime(
+                datetime.fromisoformat("2026-08-15T09:00:05+00:00")
+            ).strftime("%H:%M"),
+        )
+
 
 class TelegramReportTests(TestCase):
     """Notification command: per-run always sends; daily mode only on
@@ -1982,6 +2084,36 @@ class TelegramReportTests(TestCase):
         payload = fake_post.call_args.kwargs["json"]
         self.assertEqual(payload["chat_id"], "987")
         self.assertIn("SeraGo", payload["text"])
+
+    def test_report_shows_successful_run_times(self):
+        # The full-day report stays; a short line lists the day's successful
+        # overall runs and their (Addis) times from the master's ``runs``.
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            runs=[
+                {
+                    "run": 1, "time": "12:02", "hits": 2, "found": 3,
+                    "inserted": 1, "updated": 1, "skipped": 1,
+                    "status": "success",
+                },
+                {
+                    "run": 2, "time": "23:31", "hits": 1, "found": 0,
+                    "inserted": 0, "updated": 0, "skipped": 0,
+                    "status": "failed",
+                },
+            ],
+        )
+        with self._post() as fake_post, self._env():
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("✅ successful runs: 12:02 (Addis)", text)
+
+    def test_report_shows_dash_when_no_successful_runs(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        with self._post() as fake_post, self._env():
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("✅ successful runs: — (Addis)", text)
 
     def test_daily_mode_suppresses_healthy_run_before_digest(self):
         ScrapeLog.objects.create(day=self.TODAY)

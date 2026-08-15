@@ -5,8 +5,9 @@ sources, scraped_items, scrape_logs (health_results comes with the Celery step).
 
 Logs come in exactly two levels:
 * ``ScrapeLog`` — the MASTER log: ONE record per day with the day's overall
-  totals and a compact ``websites`` JSON (short numbers per website plus a
-  reference to each website's own log).
+  totals, a compact ``websites`` JSON (short numbers per website plus a
+  reference to each website's own log), and a short ``runs`` list (one
+  compact entry per overall scrape sweep).
 * ``AfriworkScrapeLog`` — the per-website log: ONE record per (site, day)
   with every scrape run that day inside its ``scraped_log`` JSON — the full
   detail (pages hit, http statuses, errors) you drill into from the master.
@@ -228,6 +229,10 @@ class ScrapeLog(TimeStampedModel):
       ({source, name, table, log_id, status, run_count, api_hits, items_*}).
       ``table`` + ``log_id`` reference that website's own log (e.g. the
       AfriworkScrapeLog row) so you can jump straight to its full detail.
+    * ``runs`` — ONE compact entry per overall scrape sweep ({run, time,
+      hits, found, inserted, updated, skipped, status}) — the short
+      'what happened this run' summary. Per-site detail (pages hit, http
+      statuses, errors) stays in each website's own day log.
     * Row-level ``api_hits``/``items_*`` — the day's totals across all
       websites, plus ``websites_count`` (how many websites have logs).
 
@@ -259,6 +264,16 @@ class ScrapeLog(TimeStampedModel):
             "AfriworkScrapeLog pk) where the full run detail lives."
         ),
     )
+    runs = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "One compact entry per overall scrape sweep (the 2 daily "
+            "scrape_all runs): {run, time, hits, found, inserted, updated, "
+            "skipped, status}. Per-site day logs hold the full detail; this "
+            "is the short 'what happened this run' summary."
+        ),
+    )
 
     class Meta:
         ordering = ["-day"]
@@ -271,6 +286,10 @@ class ScrapeLog(TimeStampedModel):
     def website(self, source_slug: str) -> dict | None:
         """The per-website bucket for a source slug, if present."""
         return next((w for w in self.websites if w.get("source") == source_slug), None)
+
+    def last_run(self) -> dict | None:
+        """The most recent overall sweep entry, if any."""
+        return self.runs[-1] if self.runs else None
 
     def __str__(self):
         return f"Master · {self.day} · {self.run_count} run(s) · {self.status}"

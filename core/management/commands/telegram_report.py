@@ -153,6 +153,15 @@ class Command(BaseCommand):
             f"   found   : {master.items_found}   · inserted: {master.items_inserted}   · updated: {master.items_updated}   · skipped: {master.items_skipped}",
         ]
 
+        # Short line per the stored per-sweep summary: which of the day's
+        # overall scrape runs succeeded, and at what (Addis) time.
+        success_times = [
+            run.get("time")
+            for run in (master.runs or [])
+            if run.get("status") == ScrapeStatus.SUCCESS
+        ]
+        lines.append(f"✅ successful runs: {', '.join(success_times) or '—'} (Addis)")
+
         websites = master.websites or []
         if websites:
             lines.append("")
