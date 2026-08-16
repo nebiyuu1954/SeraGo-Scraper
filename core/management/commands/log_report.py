@@ -14,7 +14,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import SITE_LOG_MODELS, ScrapeLog
-from core.reporting import api_issues_for_day
+from core.reporting import api_issues_for_day, defaulted_deadline_summary
 
 
 class Command(BaseCommand):
@@ -71,6 +71,14 @@ class Command(BaseCommand):
                 f"updated={website.get('items_updated')} "
                 f"skipped={website.get('items_skipped')}"
             )
+
+        defaulted = defaulted_deadline_summary()
+        if defaulted:
+            self.stdout.write(
+                self.style.WARNING("  Defaulted deadlines (source gave no deadline; +30d set):")
+            )
+            for line in defaulted:
+                self.stdout.write(f"    - {line}")
 
         if not issues:
             site_log_count = sum(

@@ -44,6 +44,17 @@ _MIN_DATETIME = datetime.min.replace(tzinfo=dt_timezone.utc)
 #: override this per-site via ``pagination.retries``.
 DEFAULT_RETRIES = 3
 
+#: The SeraGo job lifecycle (hide a job at deadline + GRACE, archive it
+#: afterwards) needs every listing to carry a deadline. Sources that provide
+#: none get this many days from published/first-seen as a default; the daily
+#: report lists those jobs so the source mapping can be fixed.
+DEFAULT_DEADLINE_DAYS = 30
+
+#: Days a job stays visible (public feed and saved lists) AFTER its deadline
+#: passes, before it is removed from the frontend and archived. Must match the
+#: SeraGo-side rule (deadline + 7 days) — the two projects share this contract.
+LIFECYCLE_GRACE_DAYS = 7
+
 
 def request_with_retry(
     request_fn: Callable,
@@ -551,6 +562,19 @@ class BaseScraper(ABC):
                     if key not in ("external_id", "raw_data") and value is not None
                 }
                 defaults["content_hash"] = content_hash
+                # Every job must have a deadline: the SeraGo lifecycle hides a
+                # job at deadline + 7 days and archives it after that, so a
+                # missing deadline would make the job linger forever. When the
+                # source provides none, default to published (or first-seen)
+                # + 30 days and flag it — the daily report lists defaulted
+                # deadlines so the source's mapping can be fixed. A real
+                # deadline arriving on a later update clears the flag.
+                if "deadline" not in defaults:
+                    base = defaults.get("published_at") or timezone.now()
+                    defaults["deadline"] = base + timedelta(days=DEFAULT_DEADLINE_DAYS)
+                    defaults["deadline_is_default"] = True
+                else:
+                    defaults["deadline_is_default"] = False
                 candidates.append((item, external_id, content_hash, defaults))
             except Exception as exc:  # noqa: BLE001 - keep the run going
                 errors.append(f"{item.get('external_id', '?')}: {exc}")

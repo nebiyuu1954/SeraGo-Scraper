@@ -35,6 +35,14 @@ on:
     - cron: "30 20 * * *"    # 20:30 UTC = 23:30 Addis Ababa
   workflow_dispatch: {}       # manual "Run workflow" button
 
+# Only one scrape run at a time: a manual "Run workflow" click while the
+# scheduled run is in progress would double the API traffic and Neon load
+# (and trigger the scraper's race-retry path). cancel-in-progress = the
+# newer run wins and cancels the older one — exactly right for a scraper.
+concurrency:
+  group: scrape
+  cancel-in-progress: true
+
 jobs:
   scrape:
     runs-on: ubuntu-latest

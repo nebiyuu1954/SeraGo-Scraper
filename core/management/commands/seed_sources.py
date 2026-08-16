@@ -351,6 +351,42 @@ REPORTER_PAGINATION = {
 class Command(BaseCommand):
     help = "Create or update the built-in source configurations (idempotent)."
 
+    def _seed_source(self, slug: str, defaults: dict):
+        """Create the source, or update it ONLY when its config actually changed.
+
+        ``seed_sources`` runs on every scheduled scrape (96x/day later), so a
+        write-on-every-run would churn the Source table with pointless
+        UPDATEs and timestamp bumps. When every field in ``defaults`` already
+        matches the stored row, nothing is written — just reported as
+        unchanged. JSON fields compare by value, so dict/list equality works
+        here directly.
+        """
+        existing = Source.objects.filter(slug=slug).first()
+        if existing is None:
+            source = Source.objects.create(slug=slug, **defaults)
+            self.stdout.write(
+                self.style.SUCCESS(f"Created source: {source}")
+            )
+            return
+        changed = [
+            field
+            for field, value in defaults.items()
+            if getattr(existing, field) != value
+        ]
+        if not changed:
+            self.stdout.write(
+                self.style.SUCCESS(f"Unchanged source: {existing}")
+            )
+            return
+        for field in changed:
+            setattr(existing, field, defaults[field])
+        existing.save(update_fields=changed)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Updated source: {existing} ({', '.join(changed)})"
+            )
+        )
+
     def handle(self, *args, **options):
         afriwork_defaults = {
             "name": "Afriwork (Freelance Ethiopia)",
@@ -364,12 +400,7 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        afriwork, created = Source.objects.update_or_create(
-            slug="afriwork", defaults=afriwork_defaults
-        )
-        self.stdout.write(
-            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {afriwork}")
-        )
+        self._seed_source("afriwork", afriwork_defaults)
 
         ethiojobs_defaults = {
             "name": "EthioJobs",
@@ -383,12 +414,7 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        ethiojobs, created = Source.objects.update_or_create(
-            slug="ethiojobs", defaults=ethiojobs_defaults
-        )
-        self.stdout.write(
-            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {ethiojobs}")
-        )
+        self._seed_source("ethiojobs", ethiojobs_defaults)
 
         hahujobs_defaults = {
             "name": "HaHu Jobs",
@@ -402,12 +428,7 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        hahujobs, created = Source.objects.update_or_create(
-            slug="hahujobs", defaults=hahujobs_defaults
-        )
-        self.stdout.write(
-            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {hahujobs}")
-        )
+        self._seed_source("hahujobs", hahujobs_defaults)
 
         geezjobs_defaults = {
             "name": "GeezJobs",
@@ -421,12 +442,7 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        geezjobs, created = Source.objects.update_or_create(
-            slug="geezjobs", defaults=geezjobs_defaults
-        )
-        self.stdout.write(
-            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {geezjobs}")
-        )
+        self._seed_source("geezjobs", geezjobs_defaults)
 
         reporterjobs_defaults = {
             "name": "Ethiopian Reporter Jobs",
@@ -440,9 +456,4 @@ class Command(BaseCommand):
             "scrape_interval_hours": 24,
             "is_active": True,
         }
-        reporterjobs, created = Source.objects.update_or_create(
-            slug="reporterjobs", defaults=reporterjobs_defaults
-        )
-        self.stdout.write(
-            self.style.SUCCESS(f"{'Created' if created else 'Updated'} source: {reporterjobs}")
-        )
+        self._seed_source("reporterjobs", reporterjobs_defaults)

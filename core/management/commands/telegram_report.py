@@ -45,7 +45,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import ScrapeLog, ScrapeStatus
-from core.reporting import api_issues_for_day
+from core.reporting import api_issues_for_day, defaulted_deadline_summary
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 # Telegram caps messages at 4096 chars; stay comfortably under.
@@ -193,6 +193,19 @@ class Command(BaseCommand):
                     lines.append(
                         f"• {issue['status'].upper()} — {issue['website']}: {message}"
                     )
+
+        # Listings whose deadline was defaulted by the scraper (the source
+        # provided none) — fix the source's deadline mapping to clear them.
+        defaulted = defaulted_deadline_summary()
+        if defaulted:
+            lines.append("")
+            lines.append("⏰ Defaulted deadlines")
+            for line in defaulted:
+                lines.append(f"• {line}")
+            lines.append(
+                "(source provided no deadline — scraper set +30 days; "
+                "fix the source's deadline mapping to stop this)"
+            )
 
         return "\n".join(lines), has_issues
 

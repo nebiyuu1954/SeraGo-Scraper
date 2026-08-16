@@ -1,0 +1,55 @@
+# SeraGo — weekly archive of ended jobs + logs (Sunday).
+#
+# Runs `manage.py archive_week` once a week on Sunday (03:00 UTC = 06:00
+# Addis). It collects every listing whose deadline + 7-day grace window has
+# passed, writes them (with their raw payloads) plus the week's logs into two
+# gzipped files, uploads them to the Telegram bot, and only then deletes the
+# rows from the database. A failed upload deletes nothing — the rows wait for
+# the next Sunday.
+#
+# Secrets (same as scrape.yml — Settings → Secrets and variables → Actions):
+#   DB_ENGINE, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5432 (Neon)
+#   DJANGO_SECRET_KEY
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  (the archive files are delivered here)
+name: SeraGo weekly archive
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"      # Sunday 03:00 UTC = 06:00 Addis Ababa
+  workflow_dispatch: {}       # manual "Run workflow" button
+
+concurrency:
+  group: archive
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DB_ENGINE: ${{ secrets.DB_ENGINE }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      DJANGO_DEBUG: "false"
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply migrations
+        run: python manage.py migrate
+
+      - name: Archive ended jobs + logs
+        run: python manage.py archive_week

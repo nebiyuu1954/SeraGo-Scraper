@@ -140,6 +140,11 @@ class ScrapedItem(TimeStampedModel):
     # raw_data column was removed because it duplicated that payload.
     published_at = models.DateTimeField(null=True, blank=True, db_index=True)
     deadline = models.DateTimeField(null=True, blank=True)
+    # True when the source provided no deadline and the scraper defaulted to
+    # published/first-seen + 30 days. The daily report lists these so the
+    # source's deadline mapping can be fixed; the flag clears on the next
+    # update once a real deadline arrives.
+    deadline_is_default = models.BooleanField(default=False)
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True, help_text="False once the listing disappears from the source.")
@@ -211,6 +216,11 @@ class ScrapedItem(TimeStampedModel):
         ]
         indexes = [
             models.Index(fields=["source", "is_active"], name="item_src_active_idx"),
+            # SeraGo's incremental sync pulls rows with ``WHERE updated_at >
+            # watermark`` on every run — without this index that query reads
+            # the whole table each time (and grows with it). One index keeps
+            # the watermark lookup cheap forever.
+            models.Index(fields=["updated_at"], name="item_updated_at_idx"),
         ]
 
     @property
