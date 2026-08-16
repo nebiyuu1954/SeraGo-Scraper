@@ -24,8 +24,10 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import (
+    AfriworkJob,
     AfriworkScrapeLog,
     ArchiveRun,
+    CategoryStat,
     EthioJobsJob,
     EthioJobsScrapeLog,
     GeezJob,
@@ -44,10 +46,13 @@ from core.management.commands.telegram_report import Command as TelegramReportCo
 from core.reporting import (
     api_issues_for_day,
     month_bounds,
+    recompute_sector_stats,
     recompute_stat,
+    silent_zero_sources_for_day,
     stat_block,
     update_current_stats,
     week_bounds,
+    year_bounds,
 )
 from core.scrapers.base import LIFECYCLE_GRACE_DAYS, ScrapeError, transform_job_type_code
 from core.scrapers.geezjobs import GeezJobsScraper
@@ -1069,9 +1074,14 @@ class GeezJobsScraperTests(TestCase):
     def test_fetch_uses_jina_relay_when_configured(self):
         # With the relay on, fetch() hits the relay URL and asks for fresh raw
         # HTML (the site-specific parse needs the markup, not markdown).
+        # JINA_API_KEY is pinned to "" for the no-key branch so the test never
+        # depends on the ambient environment (a key in .env would otherwise
+        # add the Authorization header and fail this assertion).
         self.source.pagination = {**self.source.pagination, "relay": "jina"}
         self.scraper = GeezJobsScraper(self.source)
-        with mock.patch("core.scrapers.html.httpx.get") as get:
+        with override_settings(JINA_API_KEY=""), mock.patch(
+            "core.scrapers.html.httpx.get"
+        ) as get:
             get.return_value.status_code = 200
             get.return_value.raise_for_status = lambda: None
             get.return_value.text = GEEZJOBS_SAMPLE_HTML
@@ -1100,6 +1110,51 @@ class GeezJobsScraperTests(TestCase):
             self.scraper.fetch(0)
         headers = get2.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer test-key")
+
+    def test_fetch_retries_transient_relay_http_errors(self):
+        # The free relay pool is flaky — a 403/429/5xx blip from the RELAY
+        # (shared infra, not the site's WAF) is retried with backoff instead
+        # of failing the run on the first attempt.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 403 if calls["n"] == 1 else 200
+            response.raise_for_status = lambda: None
+            response.text = GEEZJOBS_SAMPLE_HTML
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 2)  # one 403 blip, one success
+
+    def test_fetch_fails_when_relay_keeps_returning_403(self):
+        # A persistent 403 must fail the run loudly (never silently succeed
+        # with an empty parse). With the default 3 transport retries + 2 relay
+        # retries the fetch gives up after 5 attempts.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 403
+            response.raise_for_status = lambda: None
+            response.text = "<html></html>"
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            with self.assertRaises(httpx.HTTPStatusError):
+                self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 5)  # 3 transport retries + 2 relay retries
 
     def test_parse_extracts_cards_from_html(self):
         from bs4 import BeautifulSoup
@@ -1741,6 +1796,66 @@ class ApiIssueTests(TestCase):
         other_day = (self.today - timedelta(days=1)).isoformat()
         call_command("log_report", "--day", other_day, stdout=out)
         self.assertIn("no master log", out.getvalue())
+
+
+class SilentZeroTests(TestCase):
+    """A source that logs clean success but finds nothing all day (non-Sunday)
+    must be flagged — the ReporterJobs JS-skeleton failure hid that way."""
+
+    # 2026-08-15 is a Saturday — never the excluded Sunday.
+    DAY = date(2026, 8, 15)
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="reporterjobs",
+            name="Ethiopian Reporter Jobs",
+            endpoint="https://example.com/jobs-in-ethiopia/",
+        )
+
+    def _site_log(self, day=DAY, status=ScrapeStatus.SUCCESS, run_count=2, found=0):
+        return ReporterScrapeLog.objects.create(
+            source=self.source,
+            day=day,
+            status=status,
+            run_count=run_count,
+            api_hits=3,
+            items_found=found,
+            items_inserted=0,
+            items_updated=0,
+            items_skipped=0,
+        )
+
+    def test_flags_clean_success_with_zero_items(self):
+        self._site_log()
+        flagged = silent_zero_sources_for_day(self.DAY)
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged[0]["website"], "reporterjobs")
+        self.assertEqual(flagged[0]["run_count"], 2)
+
+    def test_does_not_flag_a_day_with_items(self):
+        self._site_log(found=320)
+        self.assertEqual(silent_zero_sources_for_day(self.DAY), [])
+
+    def test_does_not_flag_a_failed_day(self):
+        # A failed run is already reported loudly by api_issues_for_day — the
+        # silent-zero flag is only for days that LOOK healthy.
+        self._site_log(status=ScrapeStatus.FAILED)
+        self.assertEqual(silent_zero_sources_for_day(self.DAY), [])
+
+    def test_does_not_flag_sunday_silence(self):
+        # HaHu posts nothing on Sundays — that's legitimate, not a failure.
+        self._site_log(day=date(2026, 8, 16))  # Sunday
+        self.assertEqual(silent_zero_sources_for_day(date(2026, 8, 16)), [])
+
+    def test_report_mentions_silent_zero_source(self):
+        # The telegram report must surface the flag (and mark the day as
+        # having issues so daily mode doesn't stay quiet).
+        self._site_log()
+        ScrapeLog.objects.create(day=self.DAY, status=ScrapeStatus.SUCCESS)
+        out = io.StringIO()
+        call_command("log_report", "--day", self.DAY.isoformat(), stdout=out)
+        self.assertIn("Possible silent failure", out.getvalue())
+        self.assertIn("Ethiopian Reporter Jobs", out.getvalue())
 
 
 class DayLogTests(TestCase):
@@ -2474,6 +2589,96 @@ class ScrapeStatTests(TestCase):
 
     def test_stat_block_empty_when_no_row(self):
         self.assertEqual(stat_block("week", self.monday), [])
+
+    def test_recompute_day_aggregates_only_that_day(self):
+        self._log_day(self.afriwork, self.monday, found=10, inserted=8)
+        self._log_day(self.afriwork, self.monday + timedelta(days=1), found=99, inserted=90)
+        stat = recompute_stat(ScrapeStat.PeriodType.DAY, self.monday)
+        self.assertEqual(stat.period_start, self.monday)
+        self.assertEqual(stat.period_end, self.monday)
+        self.assertEqual(stat.items_found, 10)
+        self.assertEqual(stat.by_source["afriwork"]["items_inserted"], 8)
+
+    def test_recompute_year_sums_month_rows(self):
+        # The year row must come from the never-deleted MONTH rows (the day
+        # logs for past months are pruned by the archive).
+        jan = date(2026, 1, 15)
+        feb = date(2026, 2, 15)
+        self._log_day(self.afriwork, jan, found=100, inserted=80)
+        self._log_day(self.afriwork, feb, found=40, inserted=30)
+        recompute_stat(ScrapeStat.PeriodType.MONTH, month_bounds(jan)[0])
+        recompute_stat(ScrapeStat.PeriodType.MONTH, month_bounds(feb)[0])
+
+        stat = recompute_stat(ScrapeStat.PeriodType.YEAR, date(2026, 1, 1))
+        self.assertEqual(stat.period_start, date(2026, 1, 1))
+        self.assertEqual(stat.period_end, date(2026, 12, 31))
+        self.assertEqual(stat.items_found, 140)
+        self.assertEqual(stat.items_inserted, 110)
+        self.assertEqual(stat.by_source["afriwork"]["items_inserted"], 110)
+        self.assertEqual(stat.days_with_runs, 2)
+
+    def test_year_bounds(self):
+        start, end = year_bounds(date(2026, 8, 16))
+        self.assertEqual(start, date(2026, 1, 1))
+        self.assertEqual(end, date(2026, 12, 31))
+
+    def test_update_current_stats_writes_all_periods_and_sectors(self):
+        self._log_day(self.afriwork, self.monday, found=10, inserted=8)
+        today = timezone.localdate()
+        AfriworkJob.objects.create(
+            external_id="s1",
+            published_at=timezone.make_aware(
+                datetime.combine(today, datetime.min.time())
+            ),
+            sectors=["Construction & Civil Engineering", "IT"],
+        )
+        update_current_stats()
+        for period in ("day", "week", "month", "year"):
+            self.assertTrue(
+                ScrapeStat.objects.filter(period_type=period).exists(),
+                f"missing {period} stat",
+            )
+        sectors = {
+            s.category_name: s.count
+            for s in CategoryStat.objects.filter(category_type="sector", period_start=today)
+        }
+        self.assertEqual(sectors.get("Construction & Civil Engineering"), 1)
+        self.assertEqual(sectors.get("IT"), 1)
+
+    def test_recompute_sector_stats_counts_across_sites(self):
+        day = date(2026, 8, 15)
+        noon = timezone.make_aware(datetime(2026, 8, 15, 12, 0))
+        AfriworkJob.objects.create(
+            external_id="a1", published_at=noon, sectors=["IT", "IT"]
+        )
+        AfriworkJob.objects.create(
+            external_id="a2", published_at=noon, sectors=["Finance"]
+        )
+        HaHuJob.objects.create(external_id="h1", approved_on=noon, sector_name="IT")
+        HaHuJob.objects.create(external_id="h2", approved_on=noon, sector_name="")
+
+        recompute_sector_stats(day)
+        rows = {
+            s.category_name: s.count
+            for s in CategoryStat.objects.filter(category_type="sector", period_start=day)
+        }
+        self.assertEqual(rows, {"IT": 3, "Finance": 1})  # a1 has IT twice; h2's empty name dropped
+
+    def test_recompute_sector_stats_drops_stale_rows(self):
+        day = date(2026, 8, 15)
+        noon = timezone.make_aware(datetime(2026, 8, 15, 12, 0))
+        AfriworkJob.objects.create(external_id="a1", published_at=noon, sectors=["IT"])
+        recompute_sector_stats(day)
+        self.assertEqual(CategoryStat.objects.filter(period_start=day).count(), 1)
+
+        # A re-scrape where the sector changed must not keep the old count.
+        AfriworkJob.objects.filter(external_id="a1").update(sectors=["Finance"])
+        recompute_sector_stats(day)
+        rows = {
+            s.category_name: s.count
+            for s in CategoryStat.objects.filter(category_type="sector", period_start=day)
+        }
+        self.assertEqual(rows, {"Finance": 1})
 
 
 class DateTextParseTests(TestCase):

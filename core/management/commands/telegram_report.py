@@ -50,6 +50,7 @@ from core.reporting import (
     api_issues_for_day,
     defaulted_deadline_summary,
     month_bounds,
+    silent_zero_sources_for_day,
     stat_block,
     week_bounds,
 )
@@ -216,6 +217,24 @@ class Command(BaseCommand):
                 "(source provided no deadline — scraper set +30 days; "
                 "fix the source's deadline mapping to stop this)"
             )
+
+        # Sources that logged clean success but found nothing all day. A
+        # non-Sunday 0-item day is either a genuinely quiet source or the
+        # silent-failure mode (e.g. the ReporterJobs JS-skeleton) hiding
+        # behind an empty successful day — surface it instead of trusting it.
+        silent = silent_zero_sources_for_day(date.fromisoformat(day))
+        if silent:
+            lines.append("")
+            lines.append("⚠️ Possible silent failure — 0 items but logged success")
+            for s in silent:
+                lines.append(
+                    f"• {s['name']} ({s['website']}): {s['run_count']} run(s), "
+                    f"{s['api_hits']} api hit(s), 0 found"
+                )
+            lines.append(
+                "(non-Sunday 0-item day — check the site/render, not just the logs)"
+            )
+            has_issues = True
 
         # Persistent week/month stats — once per period, on the final report
         # of the day: Sundays show the completed Mon–Sun week, the month's

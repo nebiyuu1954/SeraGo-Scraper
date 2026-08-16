@@ -1010,8 +1010,10 @@ class ScrapeStat(TimeStampedModel):
     """
 
     class PeriodType(models.TextChoices):
+        DAY = "day", "Day"
         WEEK = "week", "Week"
         MONTH = "month", "Month"
+        YEAR = "year", "Year"
 
     period_type = models.CharField(max_length=8, choices=PeriodType.choices)
     period_start = models.DateField(help_text="Monday for a week; the 1st for a month.")
@@ -1050,6 +1052,50 @@ class ScrapeStat(TimeStampedModel):
 
     def __str__(self):
         return f"{self.period_type} {self.period_start} → {self.period_end} · {self.run_count} runs"
+
+
+class CategoryStat(TimeStampedModel):
+    """PERSISTENT daily counts of a normalized category (sectors today).
+
+    The top-sectors breakdown the SeraGo dashboard shows. Kept at DAY
+    granularity on purpose: a day's detail rows exist until the weekly
+    archive prunes them, so the count for each day is computed (and upserted)
+    while that day is current, and week/month/year figures are derived by
+    summing these rows — history survives even though the underlying job
+    rows are deleted. Rows are NEVER deleted (~30-60 sector names x 365 days
+    a year — negligible).
+
+    ``category_type`` is the extensible dimension: "sector" today; future
+    normalized dimensions (e.g. "job" / "company") add their own rows
+    without a schema change.
+    """
+
+    category_type = models.CharField(
+        max_length=16,
+        help_text="The normalized dimension, e.g. 'sector' (future: 'job', ...).",
+    )
+    period_start = models.DateField(
+        db_index=True, help_text="The local day these counts were computed for."
+    )
+    category_name = models.CharField(max_length=255, help_text="Sector (or category) name.")
+    count = models.PositiveIntegerField(default=0, help_text="Jobs in this category found that day.")
+
+    class Meta:
+        ordering = ["-period_start", "-count"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["category_type", "period_start", "category_name"],
+                name="uniq_categorystat_type_day_name",
+            ),
+        ]
+        indexes = [
+            # The SeraGo stats API sums rows ``WHERE period_start BETWEEN …``
+            # per category_type — one index keeps that aggregation cheap.
+            models.Index(fields=["category_type", "period_start"], name="catstat_type_day_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.category_type} {self.period_start} · {self.category_name} ×{self.count}"
 
 
 # Registry of per-website log models (ONE record per source+day each). The

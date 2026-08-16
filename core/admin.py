@@ -13,6 +13,7 @@ from .models import (
     GeezScrapeLog,
     HaHuJob,
     HaHuScrapeLog,
+    CategoryStat,
     ReporterJob,
     ReporterScrapeLog,
     ScrapeLog,
@@ -166,6 +167,29 @@ class ScrapeStatAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
     )
+
+    def has_add_permission(self, request):
+        return False  # stats are computed, never hand-created
+
+    def has_change_permission(self, request, obj=None):
+        return False  # computed read-only
+
+
+@admin.register(CategoryStat)
+class CategoryStatAdmin(admin.ModelAdmin):
+    """PERSISTENT day-granular category counts (sectors) — never deleted."""
+
+    ordering = ("-period_start", "-count")
+    list_display = (
+        "category_type",
+        "period_start",
+        "category_name",
+        "count",
+        "updated_at",
+    )
+    list_filter = ("category_type",)
+    search_fields = ("category_name",)
+    readonly_fields = ("id", "category_type", "period_start", "category_name", "count", "created_at", "updated_at")
 
     def has_add_permission(self, request):
         return False  # stats are computed, never hand-created

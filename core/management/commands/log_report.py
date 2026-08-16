@@ -20,6 +20,7 @@ from core.reporting import (
     api_issues_for_day,
     defaulted_deadline_summary,
     month_bounds,
+    silent_zero_sources_for_day,
     stat_block,
     week_bounds,
 )
@@ -92,6 +93,20 @@ class Command(BaseCommand):
             )
             for line in defaulted:
                 self.stdout.write(f"    - {line}")
+
+        # Sources that logged clean success but found nothing all day — a
+        # non-Sunday 0-item day is either genuinely quiet or a silent failure
+        # (e.g. the ReporterJobs JS-skeleton) hiding behind a successful day.
+        silent = silent_zero_sources_for_day(date.fromisoformat(day))
+        if silent:
+            self.stdout.write(
+                self.style.WARNING("  Possible silent failure — 0 items but logged success:")
+            )
+            for s in silent:
+                self.stdout.write(
+                    f"    - {s['name']} ({s['website']}): {s['run_count']} run(s), "
+                    f"{s['api_hits']} api hit(s), 0 found"
+                )
 
         if show_periods:
             report_day = date.fromisoformat(day)

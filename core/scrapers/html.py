@@ -21,7 +21,9 @@ detail row. The generic ``HtmlScraper`` cannot be scraped directly — its
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from datetime import datetime
 from urllib.parse import quote
 
@@ -32,7 +34,20 @@ from django.utils import timezone
 
 from .base import DEFAULT_RETRIES, BaseScraper, request_with_retry, transform_parse_datetime
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_TIMEOUT = 30.0
+
+#: Backoff (seconds) between EXTRA attempts when the Jina relay answers a
+#: relayed fetch with a transient HTTP error (403/429/5xx). The relay is
+#: shared infrastructure and blips even when the target site is fine, so we
+#: wait ~3s/6s before giving up rather than failing the run on the first blip.
+RELAY_BACKOFF_SECONDS = 3.0
+
+#: Extra attempts (beyond the source's transport ``retries``) for relayed
+#: fetches hit by a transient relay HTTP error. Tunable per source via
+#: ``pagination.relay_retries``.
+DEFAULT_RELAY_RETRIES = 2
 
 # Base URL of the r.jina.ai reader relay (free tier: ~20 req/min without a
 # key, 500 req/min with a free JINA_API_KEY). When a source sets
@@ -150,13 +165,55 @@ class HtmlScraper(BaseScraper):
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 **(self.source.headers or {}),
             }
-        response = request_with_retry(
-            httpx.get,
-            url=url,
-            headers=headers,
-            timeout=float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT)),
-            retries=int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES)),
+        timeout = float((self.source.pagination or {}).get("timeout", DEFAULT_TIMEOUT))
+        retries = int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES))
+        # The free relay pool is flaky: 403/429/5xx blips happen even when the
+        # target site is fine (the relay is shared infra — not the site's own
+        # WAF). ``request_with_retry`` only retries transport errors, so a
+        # relayed fetch gets these EXTRA attempts for transient HTTP statuses,
+        # with the same growing backoff. Non-relayed fetches keep the old
+        # behavior (transport errors only, retried ``retries`` times).
+        relay_retries = int(
+            (self.source.pagination or {}).get("relay_retries", DEFAULT_RELAY_RETRIES)
         )
+        attempts = max(1, retries + (relay_retries if relay else 0))
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                candidate = request_with_retry(
+                    httpx.get,
+                    url=url,
+                    headers=headers,
+                    timeout=timeout,
+                    retries=1,  # the loop below owns the retry cadence
+                )
+                if relay and (
+                    candidate.status_code in (403, 429) or candidate.status_code >= 500
+                ):
+                    raise httpx.HTTPStatusError(
+                        f"Relay returned HTTP {candidate.status_code}",
+                        request=httpx.Request("GET", url),
+                        response=candidate,
+                    )
+                response = candidate
+                break
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "HTTP attempt %d/%d failed (%s) — retrying in %.0fs",
+                        attempt + 1,
+                        attempts,
+                        exc,
+                        RELAY_BACKOFF_SECONDS * (attempt + 1),
+                    )
+                    time.sleep(RELAY_BACKOFF_SECONDS * (attempt + 1))
+        if response is None:
+            # Every attempt failed — raise so the run fails loudly (the day log
+            # records a failed run instead of a silent empty success).
+            assert last_error is not None
+            raise last_error
         # Record the request even when it fails — it still hit the site (or relay).
         # With a relay, the logged http_status is the RELAY's response (e.g. 200
         # even when the target site 403s); parse() still fails loudly on

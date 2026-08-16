@@ -6,19 +6,34 @@ registry) and collects anything that deserves attention: page hits whose
 runs whose status was ``failed``/``partial`` (with their errors/message).
 ``defaulted_deadline_summary`` surfaces listings whose deadline was defaulted
 by the scraper (the source provided none) so the source mapping can be fixed.
-``recompute_stat`` / ``update_current_stats`` maintain the PERSISTENT weekly
-and monthly ``ScrapeStat`` rollups (never deleted), and ``stat_block`` renders
-them for the daily report. Used by the ``log_report`` / ``telegram_report``
-management commands and by ``manage.py check``'s test suite.
+``silent_zero_sources_for_day`` flags sources that logged clean success but
+found nothing all day (non-Sundays) — the ReporterJobs JS-skeleton failure
+mode would otherwise hide behind an empty, successful day.
+``recompute_stat`` / ``update_current_stats`` maintain the PERSISTENT
+``ScrapeStat`` rollups at day/week/month/year grain (never deleted — the
+YEAR row aggregates the never-deleted MONTH rows), and ``stat_block`` renders
+them for the daily report. ``recompute_sector_stats`` keeps the PERSISTENT
+day-granular ``CategoryStat`` sector counts the SeraGo stats dashboard reads.
+Used by the ``log_report`` / ``telegram_report`` management commands and by
+``manage.py check``'s test suite.
 """
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from django.utils import timezone
 
-from core.models import SITE_LOG_MODELS, ScrapeLog, ScrapeStat, ScrapedItem
+from core.models import (
+    SITE_LOG_MODELS,
+    AfriworkJob,
+    CategoryStat,
+    HaHuJob,
+    ScrapeLog,
+    ScrapeStat,
+    ScrapeStatus,
+    ScrapedItem,
+)
 
 
 def api_issues_for_day(day: date | None = None) -> list[dict]:
@@ -59,6 +74,40 @@ def api_issues_for_day(day: date | None = None) -> list[dict]:
                         }
                     )
     return issues
+
+
+def silent_zero_sources_for_day(day: date | None = None) -> list[dict]:
+    """Sources whose day looks like a SILENT failure: clean success, 0 items.
+
+    A source that logged only successful runs and found nothing all day may
+    be legitimately quiet — HaHu (the aggregator) posts nothing on Sundays —
+    or silently broken, like ReporterJobs' JS-skeleton case where the run
+    said ``success`` and stored nothing for days at a time. Sundays are
+    excluded because that is the one day HaHu legitimately posts nothing.
+    Returns one dict per suspicious source
+    (``website`` / ``name`` / ``run_count`` / ``api_hits``).
+    """
+    day = day or timezone.localdate()
+    if day.weekday() == 6:  # Sunday — HaHu legitimately posts nothing
+        return []
+    flagged: list[dict] = []
+    for model in SITE_LOG_MODELS:
+        site_logs = model.objects.select_related("source").filter(day=day)
+        for site_log in site_logs:
+            if (
+                site_log.run_count > 0
+                and site_log.status == ScrapeStatus.SUCCESS
+                and site_log.items_found == 0
+            ):
+                flagged.append(
+                    {
+                        "website": site_log.source.slug,
+                        "name": site_log.source.name,
+                        "run_count": site_log.run_count,
+                        "api_hits": site_log.api_hits,
+                    }
+                )
+    return flagged
 
 
 def defaulted_deadline_summary(max_per_source: int = 3) -> list[str]:
@@ -105,16 +154,28 @@ def month_bounds(day: date) -> tuple[date, date]:
         next_month = start.replace(month=start.month + 1)
     return start, next_month - timedelta(days=1)
 
+def year_bounds(day: date) -> tuple[date, date]:
+    """(Jan 1, Dec 31) of the calendar year containing ``day``."""
+    start = day.replace(month=1, day=1)
+    return start, start.replace(month=12, day=31)
+
 
 def recompute_stat(period_type: str, period_start: date) -> ScrapeStat:
-    """Recompute a week/month ScrapeStat row from the day logs and upsert it.
+    """Recompute a day/week/month ScrapeStat row from the day logs and upsert it.
 
     Aggregates come from the day-level rows (a week is ~7 master rows +
     ~35 site rows), so this is cheap and idempotent — calling it again
     simply overwrites the same row. Runs-by-status and the top error
-    messages are counted from each site's ``scraped_log`` run entries.
+    messages are counted from each site's ``scraped_log`` run entries. YEAR
+    rows are special: the day logs for past months are pruned by the weekly
+    archive, so a year is aggregated from the never-deleted MONTH rows
+    instead (see :func:`_recompute_year_stat`).
     """
-    if period_type == ScrapeStat.PeriodType.WEEK:
+    if period_type == ScrapeStat.PeriodType.YEAR:
+        return _recompute_year_stat(period_start)
+    if period_type == ScrapeStat.PeriodType.DAY:
+        start = end = period_start
+    elif period_type == ScrapeStat.PeriodType.WEEK:
         start, end = week_bounds(period_start)
     else:
         start, end = month_bounds(period_start)
@@ -201,16 +262,152 @@ def recompute_stat(period_type: str, period_start: date) -> ScrapeStat:
     return stat
 
 
+def _recompute_year_stat(year_start: date) -> ScrapeStat:
+    """Aggregate a YEAR ScrapeStat row from the stored MONTH rows.
+
+    The day logs for past months are pruned by the weekly archive, so a year
+    cannot be recomputed from them — but the MONTH rows are never deleted, so
+    summing them is exact (a month before stats were recorded contributes
+    nothing).
+    """
+    start, end = year_bounds(year_start)
+    months = ScrapeStat.objects.filter(
+        period_type=ScrapeStat.PeriodType.MONTH,
+        period_start__gte=start,
+        period_start__lte=end,
+    )
+    run_count = api_hits = items_found = 0
+    items_inserted = items_updated = items_skipped = days_with_runs = 0
+    runs_by_status: Counter[str] = Counter()
+    error_counts: Counter[str] = Counter()
+    by_source: dict[str, dict] = {}
+    for month in months:
+        run_count += month.run_count
+        api_hits += month.api_hits
+        items_found += month.items_found
+        items_inserted += month.items_inserted
+        items_updated += month.items_updated
+        items_skipped += month.items_skipped
+        days_with_runs += month.days_with_runs
+        for status, count in (month.runs_by_status or {}).items():
+            runs_by_status[status] += count
+        for error in month.top_errors or []:
+            error_counts[error["message"]] += error["count"]
+        for slug, src in (month.by_source or {}).items():
+            target = by_source.setdefault(
+                slug,
+                {
+                    "run_count": 0,
+                    "api_hits": 0,
+                    "items_found": 0,
+                    "items_inserted": 0,
+                    "items_updated": 0,
+                    "items_skipped": 0,
+                    "days_with_runs": 0,
+                    "failed_runs": 0,
+                },
+            )
+            for key in (
+                "run_count",
+                "api_hits",
+                "items_found",
+                "items_inserted",
+                "items_updated",
+                "items_skipped",
+                "days_with_runs",
+                "failed_runs",
+            ):
+                target[key] += src.get(key, 0)
+    top_errors = [
+        {"message": message, "count": count}
+        for message, count in error_counts.most_common(5)
+    ]
+    stat, _ = ScrapeStat.objects.update_or_create(
+        period_type=ScrapeStat.PeriodType.YEAR,
+        period_start=start,
+        defaults={
+            "period_end": end,
+            "days_with_runs": days_with_runs,
+            "run_count": run_count,
+            "api_hits": api_hits,
+            "items_found": items_found,
+            "items_inserted": items_inserted,
+            "items_updated": items_updated,
+            "items_skipped": items_skipped,
+            "runs_by_status": dict(runs_by_status),
+            "top_errors": top_errors,
+            "by_source": by_source,
+        },
+    )
+    return stat
+
+
+#: Registry of (detail model, posting-date field, sector-name extractor) for
+#: the top-sectors stat. Only sites that expose a sector on their listings
+#: appear here — adding a new site (or a new normalized dimension later,
+#: e.g. "job" / "company") is one line. The extractor returns a list of
+#: sector names; unknown/empty names are dropped.
+SECTOR_EXTRACTORS = [
+    (AfriworkJob, "published_at", lambda row: row.sectors or []),
+    (HaHuJob, "approved_on", lambda row: [row.sector_name] if row.sector_name else []),
+]
+
+
+def recompute_sector_stats(day: date) -> None:
+    """Upsert the sector counts for one day from that day's detail rows.
+
+    A day's detail rows exist until the weekly archive prunes them, so this
+    is called while the day is current (after every scrape and at archive
+    time). Week/month/year figures are derived by summing these day rows, so
+    the history survives the prune. Idempotent — re-running overwrites the
+    day's counts and drops sectors that no longer appear.
+    """
+    counts: Counter[str] = Counter()
+    # The day is the local (Addis) day; filter by the exact aware range so an
+    # item published late in the day doesn't fall into the wrong day's bucket
+    # (the DB stores timestamps in UTC, where ``__date`` would slice by UTC).
+    day_start = timezone.make_aware(datetime.combine(day, datetime.min.time()))
+    day_end = day_start + timedelta(days=1)
+    for model, date_field, extract in SECTOR_EXTRACTORS:
+        rows = model.objects.filter(
+            **{
+                f"{date_field}__gte": day_start,
+                f"{date_field}__lt": day_end,
+            }
+        )
+        for row in rows.iterator():
+            for sector in extract(row):
+                cleaned = " ".join(str(sector).split())
+                if cleaned:
+                    counts[cleaned] += 1
+    for name, count in counts.items():
+        CategoryStat.objects.update_or_create(
+            category_type="sector",
+            period_start=day,
+            category_name=name,
+            defaults={"count": count},
+        )
+    # A sector that no longer appears after a re-scrape must not keep its old
+    # count (or linger as a stale row when the day ended with zero items).
+    CategoryStat.objects.filter(category_type="sector", period_start=day).exclude(
+        category_name__in=list(counts)
+    ).delete()
+
+
 def update_current_stats() -> None:
-    """Upsert the current calendar week + month ScrapeStat rows.
+    """Upsert the current day/week/month/year ScrapeStat rows + today's
+    sector counts.
 
     Called after every ``scrape_all`` and again by the archive before it
     deletes the logs — so the persistent stats are always final even though
-    the underlying day logs are archived and cleared.
+    the underlying day logs and detail rows are archived and cleared.
     """
     today = timezone.localdate()
+    recompute_stat(ScrapeStat.PeriodType.DAY, today)
     recompute_stat(ScrapeStat.PeriodType.WEEK, week_bounds(today)[0])
     recompute_stat(ScrapeStat.PeriodType.MONTH, month_bounds(today)[0])
+    recompute_stat(ScrapeStat.PeriodType.YEAR, year_bounds(today)[0])
+    recompute_sector_stats(today)
 
 
 def stat_block(period_type: str, period_start: date) -> list[str]:
@@ -226,7 +423,7 @@ def stat_block(period_type: str, period_start: date) -> list[str]:
     if stat is None:
         return []
 
-    label = ScrapeStat.PeriodType.WEEK.label if period_type == ScrapeStat.PeriodType.WEEK else ScrapeStat.PeriodType.MONTH.label
+    label = dict(ScrapeStat.PeriodType.choices).get(period_type, period_type)
     lines = [
         f"📊 {label.upper()} {stat.period_start} → {stat.period_end}",
         f"   {stat.days_with_runs} day(s) · {stat.run_count} run(s) · api {stat.api_hits}",
