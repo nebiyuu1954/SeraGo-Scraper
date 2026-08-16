@@ -1470,6 +1470,24 @@ class ReporterJobsScraperTests(TestCase):
         )
         self.assertEqual(self.scraper.parse(expired), [])
 
+    def test_parse_raises_on_js_required_skeleton(self):
+        from bs4 import BeautifulSoup
+
+        # The relay sometimes returns the raw page WITHOUT executing the site's
+        # JavaScript: the header/nav is intact but there are zero cards and a
+        # <noscript> "enable javascript" warning. That must be a ScrapeError
+        # (a failed fetch that would otherwise log success with nothing
+        # stored), NOT a clean end-of-feed.
+        skeleton = BeautifulSoup(
+            '<html><body><header><nav><a href="/">Home</a></nav></header>'
+            '<noscript>You dont have javascript enabled! Please enable it!</noscript>'
+            "</body></html>",
+            "html.parser",
+        )
+        with self.assertRaises(ScrapeError) as ctx:
+            self.scraper.parse(skeleton)
+        self.assertIn("javascript", str(ctx.exception).lower())
+
     def test_normalize_job_type_maps_known_and_drops_unknown(self):
         from core.scrapers.reporterjobs import _normalize_job_type
 

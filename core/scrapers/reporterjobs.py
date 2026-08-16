@@ -85,6 +85,12 @@ class ReporterJobsScraper(HtmlScraper):
     #: deep archive pages redirect to /expired, which keeps the site header);
     #: only a page with NO framing at all is treated as a bot challenge.
     _SITE_FRAMING_SELECTOR = "header, nav"
+    #: The listings are JavaScript-rendered. When the Jina relay returns the
+    #: raw HTML without executing JS, the page keeps the site's header/nav but
+    #: carries zero cards and this <noscript> warning where the cards should
+    #: be. That skeleton must NOT read as an exhausted feed (it would log a
+    #: silent success and store nothing for the day) — it is a scrape error.
+    _JS_REQUIRED_MARKER = "javascript enabled"
 
     @staticmethod
     def _card_text(card: Tag, selector: str) -> str:
@@ -101,7 +107,18 @@ class ReporterJobsScraper(HtmlScraper):
             # framing is also missing (challenge pages are bare). A real
             # WordPress page with no cards (e.g. the /expired page deep
             # archive pages redirect to) just means the feed is exhausted:
-            # return [] and let the sweep stop cleanly.
+            # return [] and let the sweep stop cleanly. An exception is the
+            # JS-rendered skeleton the relay sometimes returns (header +
+            # <noscript> "enable javascript" warning, no cards): that is a
+            # failed fetch, not an empty feed, so it raises instead of
+            # silently logging success with nothing stored.
+            body_text = raw.get_text(" ", strip=True).lower()
+            if self._JS_REQUIRED_MARKER in body_text:
+                raise ScrapeError(
+                    "Page returned the JS-required skeleton (no cards, "
+                    "javascript not rendered) — retrying is pointless until "
+                    "the relay returns the rendered feed"
+                )
             if not raw.select(self._SITE_FRAMING_SELECTOR):
                 raise ScrapeError(
                     "No job cards, listings archive, or site framing found on "
