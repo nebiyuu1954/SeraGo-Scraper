@@ -23,3 +23,6 @@ fixtures/auth.User.json
 
 # Logs
 *.log
+
+# Local archive previews (manage.py archive_week --out-dir)
+archive_preview/

@@ -1,0 +1,61 @@
+# SeraGo — Monday archive cleanup / retry (Monday 18:00 Addis).
+#
+# Runs `manage.py archive_week --step monday` on Monday 15:00 UTC = 18:00
+# Addis Ababa — early enough in the evening that you can debug and fix
+# anything that fails before the night starts.
+#
+# Two cases:
+#   * Sunday's archive succeeded (its "sent" note exists) → deletes Sunday's
+#     kept log rows, so you can inspect Sunday in the database all Monday
+#     day, then it's cleared and the new week starts fresh.
+#   * Sunday's archive failed (no "sent" note) → RETRIES the archive right
+#     now: files everything still in the database (a week or two), uploads
+#     it, and on success deletes everything.
+#
+# If the retry fails too: nothing is deleted, you get a Telegram warning,
+# and this run shows red — fix the issue and rerun the *weekly_archive*
+# workflow via its "Run workflow" button. There is no nightly retry.
+#
+# Secrets: same as scrape.yml / weekly_archive.yml.
+name: SeraGo archive cleanup
+
+on:
+  schedule:
+    - cron: "0 15 * * 1"      # Monday 15:00 UTC = 18:00 Addis Ababa
+  workflow_dispatch: {}
+
+concurrency:
+  group: archive
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DB_ENGINE: ${{ secrets.DB_ENGINE }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      DJANGO_DEBUG: "false"
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Apply migrations
+        run: python manage.py migrate
+
+      - name: Clear Sunday's data, or retry the archive (Monday)
+        run: python manage.py archive_week --step monday

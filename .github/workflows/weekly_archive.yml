@@ -1,11 +1,17 @@
-# SeraGo — weekly archive of ended jobs + logs (Sunday).
+# SeraGo — weekly archive of ended jobs + logs (Sunday night).
 #
-# Runs `manage.py archive_week` once a week on Sunday (03:00 UTC = 06:00
-# Addis). It collects every listing whose deadline + 7-day grace window has
-# passed, writes them (with their raw payloads) plus the week's logs into two
-# gzipped files, uploads them to the Telegram bot, and only then deletes the
-# rows from the database. A failed upload deletes nothing — the rows wait for
-# the next Sunday.
+# Runs `manage.py archive_week` (--step sunday) on Sunday 20:45 UTC = 23:45
+# Addis Ababa — right after the day's last scrape (20:30 UTC). It files every
+# job past its deadline + 7-day grace window and the week's logs (Mon–Sun),
+# uploads the two gzipped files to the Telegram bot, then deletes the jobs
+# and the Mon–Sat log rows — keeping Sunday's logs in the database so you can
+# inspect the day on Monday.
+#
+# If the upload fails: nothing is deleted, you get a Telegram warning, and
+# the run shows red. Monday's cleanup workflow (archive_cleanup.yml, 15:00
+# UTC = 18:00 Addis) clears Sunday's kept data — or retries this archive if
+# this run failed. There is no nightly retry: if Monday's retry also fails,
+# fix the issue and rerun via the "Run workflow" button.
 #
 # Secrets (same as scrape.yml — Settings → Secrets and variables → Actions):
 #   DB_ENGINE, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5432 (Neon)
@@ -15,8 +21,8 @@ name: SeraGo weekly archive
 
 on:
   schedule:
-    - cron: "0 3 * * 0"      # Sunday 03:00 UTC = 06:00 Addis Ababa
-  workflow_dispatch: {}       # manual "Run workflow" button
+    - cron: "45 20 * * 0"      # Sunday 20:45 UTC = 23:45 Addis Ababa
+  workflow_dispatch: {}       # manual "Run workflow" button (also the Monday-failure rerun)
 
 concurrency:
   group: archive
@@ -51,5 +57,5 @@ jobs:
       - name: Apply migrations
         run: python manage.py migrate
 
-      - name: Archive ended jobs + logs
-        run: python manage.py archive_week
+      - name: Archive ended jobs + logs (Sunday)
+        run: python manage.py archive_week --step sunday

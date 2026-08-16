@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from core.models import (
     AfriworkScrapeLog,
+    ArchiveRun,
     EthioJobsJob,
     EthioJobsScrapeLog,
     GeezJob,
@@ -40,7 +41,7 @@ from core.models import (
 )
 from core.management.commands.telegram_report import Command as TelegramReportCommand
 from core.reporting import api_issues_for_day
-from core.scrapers.base import ScrapeError, transform_job_type_code
+from core.scrapers.base import LIFECYCLE_GRACE_DAYS, ScrapeError, transform_job_type_code
 from core.scrapers.geezjobs import GeezJobsScraper
 from core.scrapers.graphql import GraphQLScraper
 from core.scrapers.hahujobs import HaHuJobsScraper
@@ -2228,3 +2229,124 @@ class SeedSourcesCommandTests(TestCase):
         call_command("seed_sources", stdout=io.StringIO())
         reporter = Source.objects.get(slug="reporterjobs")
         self.assertEqual((reporter.pagination or {}).get("relay"), "jina")
+
+
+class ArchiveWeekCommandTests(TestCase):
+    """The Sunday archive keeps Sunday's logs; Monday clears them or retries.
+
+    Flow under test (one calendar week Mon–Sun):
+      * Sunday: files everything in the DB, sends, deletes the jobs and the
+        Mon–Sat log rows, KEEPS Sunday's, writes the ArchiveRun "sent" note.
+      * Monday with a note: deletes Sunday's kept rows (the safe clear).
+      * Monday without a note: retries the archive; on success deletes
+        everything and writes the note.
+      * Any send failure: nothing is deleted, a warning is raised (the
+        command exits non-zero so the workflow shows red).
+    """
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="afriwork",
+            name="Afriwork",
+            endpoint="https://example.com/graphql",
+        )
+        self.today = timezone.localdate()
+        self.yesterday = self.today - timedelta(days=1)
+        self.old_day = self.today - timedelta(days=3)
+        # A week's worth of log rows: an old day, yesterday (Mon–Sat stand-ins)
+        # and today (Sunday).
+        for day in (self.old_day, self.yesterday, self.today):
+            ScrapeLog.objects.create(
+                day=day, status="success", run_count=1, api_hits=1,
+                items_found=1, items_inserted=1,
+            )
+            AfriworkScrapeLog.objects.create(
+                source=self.source, day=day, status="success",
+                run_count=1, api_hits=1, items_found=1, items_inserted=1,
+            )
+        self.env = mock.patch.dict(
+            os.environ, {"TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "test-chat"}
+        )
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def _ended_job(self, external_id="x1"):
+        """A listing past its deadline + grace window (what Sunday archives)."""
+        return ScrapedItem.objects.create(
+            source=self.source,
+            external_id=external_id,
+            title="Old job",
+            content_hash="abc123",
+            deadline=timezone.now() - timedelta(days=LIFECYCLE_GRACE_DAYS + 1),
+        )
+
+    def _ok_post(self):
+        return mock.patch(
+            "core.management.commands.archive_week.httpx.post",
+            return_value=mock.Mock(
+                raise_for_status=lambda: None, json=lambda: {"ok": True}
+            ),
+        )
+
+    def test_sunday_files_sends_keeps_sunday_and_writes_note(self):
+        self._ended_job()
+        with self._ok_post():
+            call_command("archive_week", "--step", "sunday", stdout=io.StringIO())
+
+        # Jobs archived + deleted entirely.
+        self.assertEqual(ScrapedItem.objects.count(), 0)
+        # Mon–Sat log rows deleted; Sunday's kept.
+        self.assertEqual(ScrapeLog.objects.filter(day=self.today).count(), 1)
+        self.assertEqual(ScrapeLog.objects.filter(day__lt=self.today).count(), 0)
+        self.assertEqual(AfriworkScrapeLog.objects.filter(day=self.today).count(), 1)
+        self.assertEqual(AfriworkScrapeLog.objects.filter(day__lt=self.today).count(), 0)
+        # The "sent" note was written.
+        note = ArchiveRun.objects.filter(archived_on=self.today).first()
+        self.assertIsNotNone(note)
+        self.assertEqual(note.jobs_count, 1)
+
+    def test_monday_with_note_clears_sunday_without_sending(self):
+        ArchiveRun.objects.create(
+            archived_on=self.yesterday, jobs_file="j.gz", logs_file="l.gz"
+        )
+        with mock.patch(
+            "core.management.commands.archive_week.httpx.post"
+        ) as fake_post:
+            call_command("archive_week", "--step", "monday", stdout=io.StringIO())
+
+        fake_post.assert_not_called()  # nothing to send — Sunday already filed
+        # Sunday's kept rows (and anything older) are cleared; the new week's
+        # own rows (today's, from Monday's first scrape) stay.
+        self.assertEqual(ScrapeLog.objects.filter(day__lt=self.today).count(), 0)
+        self.assertEqual(ScrapeLog.objects.count(), 1)
+        self.assertEqual(AfriworkScrapeLog.objects.filter(day__lt=self.today).count(), 0)
+        self.assertEqual(AfriworkScrapeLog.objects.count(), 1)
+
+    def test_monday_without_note_retries_and_deletes_everything(self):
+        self._ended_job()
+        with self._ok_post():
+            call_command("archive_week", "--step", "monday", stdout=io.StringIO())
+
+        # The retry filed everything still in the DB and cleared it all.
+        self.assertEqual(ScrapedItem.objects.count(), 0)
+        self.assertEqual(ScrapeLog.objects.count(), 0)
+        self.assertEqual(AfriworkScrapeLog.objects.count(), 0)
+        # The note now exists for the Sunday the retry covered.
+        self.assertTrue(ArchiveRun.objects.filter(archived_on=self.yesterday).exists())
+
+    def test_failed_send_deletes_nothing_and_raises(self):
+        self._ended_job()
+        with mock.patch(
+            "core.management.commands.archive_week.httpx.post",
+            side_effect=httpx.ConnectError("boom"),
+        ):
+            with self.assertRaises(CommandError):
+                call_command("archive_week", "--step", "sunday", stdout=io.StringIO())
+
+        # Nothing was deleted on failure — jobs and all log rows stay.
+        self.assertEqual(ScrapedItem.objects.count(), 1)
+        self.assertEqual(ScrapeLog.objects.count(), 3)
+        self.assertEqual(AfriworkScrapeLog.objects.count(), 3)
+        self.assertFalse(ArchiveRun.objects.exists())  # no "sent" note

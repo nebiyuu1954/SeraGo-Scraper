@@ -963,6 +963,38 @@ class ReporterScrapeLog(TimeStampedModel):
         return f"Reporter Jobs · {self.day} · {self.run_count} run(s) · {self.status}"
 
 
+class ArchiveRun(TimeStampedModel):
+    """One row per successful weekly archive send — the 'sent' note.
+
+    The Sunday archive writes a row here only AFTER both weekly files
+    uploaded to Telegram successfully. Monday's cleanup checks it: if a row
+    exists for the Sunday just past, Sunday's kept log rows may be deleted;
+    if not, the Sunday archive failed and Monday retries it. This note is
+    what guarantees a Monday cleanup can never delete data that was never
+    filed.
+
+    ``archived_on`` is the calendar day the files cover (the Sunday of the
+    week just ended — ``update_or_create`` keeps one row per Sunday, so a
+    Monday retry overwrites the failed Sunday's entry).
+    """
+
+    archived_on = models.DateField(
+        unique=True,
+        help_text="The Sunday the archived week ended (the files cover Mon–Sun up to this day).",
+    )
+    jobs_file = models.CharField(max_length=255, blank=True, default="", help_text="Sent jobs filename, e.g. jobs-2026-08-16.jsonl.gz.")
+    logs_file = models.CharField(max_length=255, blank=True, default="", help_text="Sent logs filename, e.g. logs-2026-08-16.json.gz.")
+    jobs_count = models.PositiveIntegerField(default=0, help_text="How many ended jobs the jobs file contained.")
+    log_rows = models.PositiveIntegerField(default=0, help_text="How many master + per-site log rows the logs file contained.")
+    sent_at = models.DateTimeField(auto_now_add=True, help_text="When both files finished uploading.")
+
+    class Meta:
+        ordering = ["-archived_on"]
+
+    def __str__(self):
+        return f"Archive through {self.archived_on} · {self.jobs_count} jobs · {self.log_rows} log rows"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.
