@@ -180,6 +180,15 @@ class AfriworkJobsScraper(GraphQLScraper):
     The API payload has no URL field, but the site's job pages live at
     ``https://afriworket.com/jobs/<id>`` (the API's own opaque job id —
     verified against live URLs). Registered per-slug in the factory.
+
+    Also owns the client-side today guard: Afriwork is the one GraphQL site
+    whose server-side ``published_at`` filter can fail to constrain (a wide
+    ``--no-today`` window, a refresh wave, an API change), so pre-today items
+    are dropped here and the sweep stops at the first page with nothing from
+    today. HaHu reuses the GraphQL pipeline but filters server-side on
+    ``approved_on`` — it must NOT inherit these hooks (its all-ethiojobs
+    pages would look like past-today pages and truncate the sweep), which is
+    why they live on this subclass rather than the generic GraphQLScraper.
     """
 
     def normalize(self, raw_item: dict) -> dict:
@@ -187,3 +196,43 @@ class AfriworkJobsScraper(GraphQLScraper):
         if not item.get("url") and raw_item.get("id"):
             item["url"] = f"https://afriworket.com/jobs/{raw_item['id']}"
         return item
+
+    # -- client-side today guard (mirrors RestJsonScraper) --
+
+    def _today_start(self) -> datetime:
+        """Aware datetime for the start of the current local day."""
+        return timezone.make_aware(datetime.combine(timezone.localdate(), dtime.min))
+
+    def _is_today_item(self, item: dict) -> bool:
+        """True when the listing counts as 'today' by Afriwork's own rule.
+
+        Mirrors the GraphQL query: a listing is today's when it was published
+        today OR refreshed (reposted) today. A listing with no usable date at
+        all is kept (safer than silently dropping it).
+        """
+        today_start = self._today_start()
+        published = transform_parse_datetime(item.get("published_at"))
+        if published is not None and published >= today_start:
+            return True
+        refreshed = transform_parse_datetime((item.get("raw_data") or {}).get("refreshed_at"))
+        if refreshed is not None and refreshed >= today_start:
+            return True
+        return published is None and refreshed is None
+
+    def _keep_item(self, item: dict) -> bool:
+        """Drop listings that are not today's when the today filter is on."""
+        if not self.only_today:
+            return True
+        return self._is_today_item(item)
+
+    def _past_today_boundary(self, page: int, items: list[dict]) -> bool:
+        """Stop when this page has already moved past today's listings.
+
+        The API returns listings newest-first, so if a page contains NO items
+        from today, every page below it is older than today too and the sweep
+        can end. (Mixed pages are swept through and their pre-today items
+        dropped by :meth:`_keep_item`.)
+        """
+        if not items:
+            return True
+        return all(not self._is_today_item(i) for i in items)

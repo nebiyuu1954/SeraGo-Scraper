@@ -86,7 +86,10 @@ AFRIWORK_PAGINATION = {
     # "date_filter" lets the GraphQLScraper inject today's local-day window
     # into the $from/$to variables when Source.only_today is enabled.
     "date_filter": {"field": "published_at", "from_var": "from", "to_var": "to"},
-    "max_pages": 50,
+    # The catalog (~500+ active listings) can be swept in full during a
+    # --no-today backfill or a refresh wave; the GraphQLScraper's client-side
+    # today boundary stops normal today-runs far earlier.
+    "max_pages": 200,
 }
 
 # EthioJobs — REST GET API: api.ethiojobs.net/ethiojobs/api/job-board/jobs.
@@ -113,9 +116,10 @@ ETHIOJOBS_PAGINATION = {
     "page_1_based": True,  # the API numbers pages from 1
     # No from_var/to_var: the API cannot filter by date server-side, so the
     # RestJsonScraper stops the sweep client-side once a page is older than
-    # today (see RestJsonScraper._past_today_boundary).
+    # today (see RestJsonScraper._past_today_boundary). max_pages is sized
+    # for the ~1100-listing catalog so full sweeps never truncate mid-way.
     "date_filter": {"field": "published_at"},
-    "max_pages": 100,
+    "max_pages": 200,
 }
 
 # HaHuJobs — aggregator GraphQL API: graph.aggregator.hahu.jobs/v1/graphql.

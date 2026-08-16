@@ -63,13 +63,15 @@ MONTHS = {
 def parse_month_day_year(text: str) -> datetime | None:
     """Extract a 'Month D, YYYY' date anywhere in the text -> aware local midnight.
 
-    Handles full and abbreviated month names ('September 7, 2026' / 'Aug 7,
-    2026'); returns None when no recognizable date is present. Used for the
-    absolute deadline/posted dates both HTML sites show on their cards.
+    Handles full and abbreviated month names, with or without a trailing
+    period on the abbreviation ('September 7, 2026' / 'Aug 7, 2026' / 'Sep. 6,
+    2026' — GeezJobs' detail page abbreviates with a period); returns None
+    when no recognizable date is present. Used for the absolute
+    deadline/posted dates both HTML sites show on their cards.
     """
     if not text:
         return None
-    match = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", text)
+    match = re.search(r"([A-Za-z]+)\.?\s+(\d{1,2}),\s*(\d{4})", text)
     if not match:
         return None
     month = MONTHS.get(match.group(1).capitalize())

@@ -51,9 +51,9 @@ from core.reporting import (
 )
 from core.scrapers.base import LIFECYCLE_GRACE_DAYS, ScrapeError, transform_job_type_code
 from core.scrapers.geezjobs import GeezJobsScraper
-from core.scrapers.graphql import GraphQLScraper
+from core.scrapers.graphql import AfriworkJobsScraper, GraphQLScraper
 from core.scrapers.hahujobs import HaHuJobsScraper
-from core.scrapers.html import HtmlScraper
+from core.scrapers.html import HtmlScraper, parse_month_day_year
 from core.scrapers.reporterjobs import ReporterJobsScraper
 from core.scrapers.rest import RestJsonScraper
 from core.structures import (
@@ -2456,3 +2456,75 @@ class ScrapeStatTests(TestCase):
 
     def test_stat_block_empty_when_no_row(self):
         self.assertEqual(stat_block("week", self.monday), [])
+
+
+class DateTextParseTests(TestCase):
+    """The shared HTML date parser handles both card and detail-page formats."""
+
+    def test_abbreviated_month_with_trailing_period(self):
+        # GeezJobs' detail page abbreviates with a period: "Sep. 6, 2026".
+        parsed = parse_month_day_year("Sep. 6, 2026 (21 days left)")
+        self.assertIsNotNone(parsed)
+        self.assertEqual((parsed.month, parsed.day, parsed.year), (9, 6, 2026))
+
+    def test_full_and_bare_abbreviation_still_parse(self):
+        self.assertEqual(parse_month_day_year("Deadline: September 7, 2026").day, 7)
+        self.assertEqual(parse_month_day_year("Aug 7, 2026").month, 8)
+
+    def test_unparseable_returns_none(self):
+        self.assertIsNone(parse_month_day_year("Deadline: none"))
+        self.assertIsNone(parse_month_day_year(""))
+
+
+class GraphQLTodayBoundaryTests(TestCase):
+    """AfriworkJobsScraper's client-side today guard (published-or-refreshed)."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="afriwork",
+            name="Afriwork",
+            endpoint="https://example.com/graphql",
+            only_today=True,
+        )
+        self.scraper = AfriworkJobsScraper(self.source)
+        self.old = {
+            "published_at": timezone.now() - timedelta(days=5),
+            "raw_data": {"refreshed_at": None},
+        }
+        self.new = {"published_at": timezone.now(), "raw_data": {"refreshed_at": None}}
+
+    def test_published_today_is_today(self):
+        self.assertTrue(self.scraper._is_today_item(self.new))
+
+    def test_old_published_not_refreshed_is_not_today(self):
+        self.assertFalse(self.scraper._is_today_item(self.old))
+
+    def test_refreshed_today_counts_as_today(self):
+        # Mirrors the Afriwork query: published today OR refreshed today.
+        item = {
+            "published_at": timezone.now() - timedelta(days=5),
+            "raw_data": {"refreshed_at": timezone.now()},
+        }
+        self.assertTrue(self.scraper._is_today_item(item))
+
+    def test_keep_item_drops_old_in_today_mode(self):
+        self.assertFalse(self.scraper._keep_item(self.old))
+        self.assertTrue(self.scraper._keep_item(self.new))
+
+    def test_keep_item_keeps_all_outside_today_mode(self):
+        self.source.only_today = False
+        self.assertTrue(AfriworkJobsScraper(self.source)._keep_item(self.old))
+
+    def test_hahujobs_does_not_inherit_the_guard(self):
+        # HaHu filters server-side on approved_on; inheriting the guard would
+        # drop its items (no published_at/refreshed_at) and truncate sweeps.
+        from core.scrapers.hahujobs import HaHuJobsScraper
+
+        hahu = HaHuJobsScraper(self.source)
+        self.assertTrue(hahu._keep_item(self.old))
+        self.assertFalse(hahu._past_today_boundary(0, [self.old]))
+
+    def test_past_today_boundary_stops_on_all_old_page(self):
+        self.assertTrue(self.scraper._past_today_boundary(3, [self.old, self.old]))
+        self.assertFalse(self.scraper._past_today_boundary(3, [self.new]))
+        self.assertFalse(self.scraper._past_today_boundary(3, [self.new, self.old]))
