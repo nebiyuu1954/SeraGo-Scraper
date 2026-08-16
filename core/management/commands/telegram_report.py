@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import date
 
 import httpx
 
@@ -45,7 +46,13 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import ScrapeLog, ScrapeStatus
-from core.reporting import api_issues_for_day, defaulted_deadline_summary
+from core.reporting import (
+    api_issues_for_day,
+    defaulted_deadline_summary,
+    month_bounds,
+    stat_block,
+    week_bounds,
+)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 # Telegram caps messages at 4096 chars; stay comfortably under.
@@ -93,7 +100,7 @@ class Command(BaseCommand):
         mode = options["mode"] or os.environ.get("NOTIFY_MODE", "per-run").strip() or "per-run"
         is_digest_run = self._is_digest_run()
 
-        text, has_issues = self._format_report(day)
+        text, has_issues = self._format_report(day, is_digest_run)
 
         if mode == "daily" and not options["force"]:
             if not (has_issues or is_digest_run):
@@ -129,11 +136,14 @@ class Command(BaseCommand):
             raise SystemExit(1)
         self.stdout.write(self.style.SUCCESS("Report sent to Telegram."))
 
-    def _format_report(self, day: str) -> tuple[str, bool]:
+    def _format_report(self, day: str, is_digest_run: bool) -> tuple[str, bool]:
         """Build the day's report as a tidy message body.
 
         Returns (text, has_issues) — has_issues is True when the day has any
-        failed/partial run, non-200 response, or no log at all.
+        failed/partial run, non-200 response, or no log at all. On the day's
+        final report (the digest), the message also carries the persistent
+        WEEKLY stat (on Sundays — the week Mon–Sun is then complete) and the
+        MONTHLY stat (on the month's last day) — once each per period.
         """
         master = ScrapeLog.objects.filter(day=day).first()
         if master is None:
@@ -206,6 +216,22 @@ class Command(BaseCommand):
                 "(source provided no deadline — scraper set +30 days; "
                 "fix the source's deadline mapping to stop this)"
             )
+
+        # Persistent week/month stats — once per period, on the final report
+        # of the day: Sundays show the completed Mon–Sun week, the month's
+        # last day shows the completed month.
+        if is_digest_run:
+            report_day = date.fromisoformat(day)
+            if report_day.weekday() == 6:  # Sunday
+                week_block = stat_block("week", week_bounds(report_day)[0])
+                if week_block:
+                    lines.append("")
+                    lines.extend(week_block)
+            if report_day.day == month_bounds(report_day)[1].day:  # last day of month
+                month_block = stat_block("month", month_bounds(report_day)[0])
+                if month_block:
+                    lines.append("")
+                    lines.extend(month_block)
 
         return "\n".join(lines), has_issues
 

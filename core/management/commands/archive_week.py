@@ -76,6 +76,7 @@ from django.db.models import Model
 from django.utils import timezone
 
 from core.models import SITE_LOG_MODELS, ArchiveRun, ScrapeLog, ScrapedItem
+from core.reporting import update_current_stats
 from core.scrapers.base import LIFECYCLE_GRACE_DAYS
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,12 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Both files uploaded to Telegram."))
 
         # ------------------------------------------- delete on success
+        # Finalize the persistent week/month stats BEFORE the log rows are
+        # deleted — they are the permanent record once these logs are gone.
+        try:
+            update_current_stats()
+        except Exception:  # noqa: BLE001 - stats must never break the archive
+            logger.exception("Could not update scrape stats before archiving")
         ArchiveRun.objects.update_or_create(
             archived_on=today,
             defaults={
@@ -449,6 +456,11 @@ class Command(BaseCommand):
             )
         self.stdout.write(self.style.SUCCESS("Retry uploaded both files to Telegram."))
 
+        # Finalize the persistent stats before everything is deleted.
+        try:
+            update_current_stats()
+        except Exception:  # noqa: BLE001 - stats must never break the archive
+            logger.exception("Could not update scrape stats before archiving")
         ArchiveRun.objects.update_or_create(
             archived_on=last_sunday,
             defaults={

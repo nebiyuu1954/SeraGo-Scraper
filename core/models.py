@@ -995,6 +995,63 @@ class ArchiveRun(TimeStampedModel):
         return f"Archive through {self.archived_on} · {self.jobs_count} jobs · {self.log_rows} log rows"
 
 
+class ScrapeStat(TimeStampedModel):
+    """PERSISTENT weekly/monthly rollups of the scrape logs.
+
+    The day logs (master + per-site) are archived to Telegram files and
+    deleted weekly, so their history lives only in files. This table is the
+    permanent record instead: one row per calendar week (Mon–Sun) and one
+    per calendar month, holding the same day-level aggregates the logs carry
+    (runs, api hits, items found/inserted/updated/skipped, per-source
+    breakdown) plus a failure summary. Rows are NEVER deleted — recomputed
+    (upserted) after every scrape and again right before the archive deletes
+    the logs, so the numbers are final even though the underlying logs are
+    gone. Size is negligible (~52 week + 12 month rows a year).
+    """
+
+    class PeriodType(models.TextChoices):
+        WEEK = "week", "Week"
+        MONTH = "month", "Month"
+
+    period_type = models.CharField(max_length=8, choices=PeriodType.choices)
+    period_start = models.DateField(help_text="Monday for a week; the 1st for a month.")
+    period_end = models.DateField(help_text="Sunday for a week; the last day for a month.")
+    days_with_runs = models.PositiveIntegerField(default=0, help_text="How many days in the period recorded logs.")
+    run_count = models.PositiveIntegerField(default=0)
+    api_hits = models.PositiveIntegerField(default=0)
+    items_found = models.PositiveIntegerField(default=0)
+    items_inserted = models.PositiveIntegerField(default=0)
+    items_updated = models.PositiveIntegerField(default=0)
+    items_skipped = models.PositiveIntegerField(default=0)
+    runs_by_status = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='{"success": N, "partial": N, "failed": N} across all per-site runs in the period.',
+    )
+    top_errors = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Most common run error messages: [{"message": ..., "count": N}] (top 5).',
+    )
+    by_source = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-source aggregates: {slug: {run_count, api_hits, items_*, days_with_runs, failed_runs}}.",
+    )
+
+    class Meta:
+        ordering = ["-period_start"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["period_type", "period_start"],
+                name="uniq_scrapestat_type_start",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.period_type} {self.period_start} → {self.period_end} · {self.run_count} runs"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.

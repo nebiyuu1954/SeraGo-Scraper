@@ -16,6 +16,7 @@ from .models import (
     ReporterJob,
     ReporterScrapeLog,
     ScrapeLog,
+    ScrapeStat,
     ScrapedItem,
     Source,
 )
@@ -126,6 +127,51 @@ class ScrapeLogAdmin(admin.ModelAdmin):
     @admin.display(description="Websites (JSON)")
     def websites_pretty(self, obj):
         return format_html("<pre>{}</pre>", json.dumps(obj.websites, indent=2, default=str))
+
+
+@admin.register(ScrapeStat)
+class ScrapeStatAdmin(admin.ModelAdmin):
+    """PERSISTENT weekly/monthly rollups — never deleted (unlike the logs)."""
+
+    ordering = ("-period_start",)
+    list_display = (
+        "period_type",
+        "period_start",
+        "period_end",
+        "days_with_runs",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "updated_at",
+    )
+    list_filter = ("period_type",)
+    readonly_fields = (
+        "id",
+        "period_type",
+        "period_start",
+        "period_end",
+        "days_with_runs",
+        "run_count",
+        "api_hits",
+        "items_found",
+        "items_inserted",
+        "items_updated",
+        "items_skipped",
+        "runs_by_status",
+        "top_errors",
+        "by_source",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False  # stats are computed, never hand-created
+
+    def has_change_permission(self, request, obj=None):
+        return False  # computed read-only
 
 
 @admin.register(AfriworkScrapeLog)

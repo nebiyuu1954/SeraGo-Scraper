@@ -12,7 +12,7 @@ import io
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -35,12 +35,20 @@ from core.models import (
     ReporterJob,
     ReporterScrapeLog,
     ScrapeLog,
+    ScrapeStat,
     ScrapeStatus,
     ScrapedItem,
     Source,
 )
 from core.management.commands.telegram_report import Command as TelegramReportCommand
-from core.reporting import api_issues_for_day
+from core.reporting import (
+    api_issues_for_day,
+    month_bounds,
+    recompute_stat,
+    stat_block,
+    update_current_stats,
+    week_bounds,
+)
 from core.scrapers.base import LIFECYCLE_GRACE_DAYS, ScrapeError, transform_job_type_code
 from core.scrapers.geezjobs import GeezJobsScraper
 from core.scrapers.graphql import GraphQLScraper
@@ -2350,3 +2358,101 @@ class ArchiveWeekCommandTests(TestCase):
         self.assertEqual(ScrapeLog.objects.count(), 3)
         self.assertEqual(AfriworkScrapeLog.objects.count(), 3)
         self.assertFalse(ArchiveRun.objects.exists())  # no "sent" note
+
+
+class ScrapeStatTests(TestCase):
+    """The persistent weekly/monthly rollups stay correct."""
+
+    def setUp(self):
+        self.afriwork = Source.objects.create(
+            slug="afriwork",
+            name="Afriwork",
+            endpoint="https://example.com/graphql",
+        )
+        self.ethiojobs = Source.objects.create(
+            slug="ethiojobs",
+            name="EthioJobs",
+            endpoint="https://example.com/api",
+        )
+        self.monday = week_bounds(timezone.localdate())[0]  # this week's Monday
+        self.sunday = self.monday + timedelta(days=6)
+
+    def _log_day(self, source, day, runs=1, found=10, inserted=8, failed=False):
+        """A master row + one per-site row for a (source, day)."""
+        master, _ = ScrapeLog.objects.get_or_create(day=day)
+        master.run_count += runs
+        master.api_hits += runs * 2
+        master.items_found += found
+        master.items_inserted += inserted
+        master.items_skipped += found - inserted
+        master.save()
+        site, _ = AfriworkScrapeLog.objects.get_or_create(source=source, day=day)
+        site.run_count = runs
+        site.api_hits = runs * 2
+        site.items_found = found
+        site.items_inserted = inserted
+        site.items_skipped = found - inserted
+        site.scraped_log = [
+            {
+                "status": "failed" if failed else "success",
+                "errors": ["ReadTimeout: The read operation timed out"] if failed else [],
+                "message": "",
+                "api_hits": runs * 2,
+                "items_found": found,
+                "items_inserted": inserted,
+            }
+        ]
+        site.save()
+
+    def test_recompute_week_aggregates_and_failures(self):
+        self._log_day(self.afriwork, self.monday, found=10, inserted=8)
+        self._log_day(self.afriwork, self.sunday, found=5, inserted=5, failed=True)
+        self._log_day(self.ethiojobs, self.monday, found=20, inserted=15)
+
+        stat = recompute_stat(ScrapeStat.PeriodType.WEEK, self.monday)
+
+        self.assertEqual(stat.period_end, self.sunday)
+        self.assertEqual(stat.days_with_runs, 2)
+        self.assertEqual(stat.run_count, 3)
+        self.assertEqual(stat.items_found, 35)
+        self.assertEqual(stat.items_inserted, 28)
+        self.assertEqual(stat.items_skipped, 7)
+        self.assertEqual(stat.runs_by_status, {"success": 2, "failed": 1})
+        self.assertEqual(stat.top_errors[0]["message"], "ReadTimeout: The read operation timed out")
+        self.assertEqual(stat.top_errors[0]["count"], 1)
+        self.assertEqual(stat.by_source["afriwork"]["failed_runs"], 1)
+        self.assertEqual(stat.by_source["ethiojobs"]["items_inserted"], 15)
+
+    def test_recompute_is_idempotent_upsert(self):
+        self._log_day(self.afriwork, self.monday, found=10, inserted=8)
+        recompute_stat(ScrapeStat.PeriodType.WEEK, self.monday)
+        recompute_stat(ScrapeStat.PeriodType.WEEK, self.monday)
+        self.assertEqual(ScrapeStat.objects.filter(
+            period_type="week", period_start=self.monday
+        ).count(), 1)
+
+    def test_month_bounds(self):
+        start, end = month_bounds(date(2026, 8, 16))
+        self.assertEqual(start, date(2026, 8, 1))
+        self.assertEqual(end, date(2026, 8, 31))
+        start, end = month_bounds(date(2026, 12, 15))
+        self.assertEqual(start, date(2026, 12, 1))
+        self.assertEqual(end, date(2026, 12, 31))
+
+    def test_update_current_stats_writes_week_and_month(self):
+        self._log_day(self.afriwork, self.monday)
+        update_current_stats()
+        self.assertTrue(ScrapeStat.objects.filter(period_type="week").exists())
+        self.assertTrue(ScrapeStat.objects.filter(period_type="month").exists())
+
+    def test_stat_block_renders_failure_line(self):
+        self._log_day(self.afriwork, self.monday, found=10, inserted=8, failed=True)
+        recompute_stat(ScrapeStat.PeriodType.WEEK, self.monday)
+        block = stat_block("week", self.monday)
+        text = "\n".join(block)
+        self.assertIn("📊 WEEK", text)
+        self.assertIn("1 failed", text)
+        self.assertIn("ReadTimeout", text)
+
+    def test_stat_block_empty_when_no_row(self):
+        self.assertEqual(stat_block("week", self.monday), [])

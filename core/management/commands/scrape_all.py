@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from core.models import ScrapeLog, ScrapeStatus, Source
+from core.reporting import update_current_stats
 from core.scrapers import ScraperFactory
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,14 @@ class Command(BaseCommand):
                 self.stdout.write(f"  Sweeps: {len(master.runs)} ({sweep_times} Addis)")
         else:
             self.stdout.write(self.style.WARNING(f"Day {day}: no master log yet."))
+
+        # Keep the PERSISTENT weekly/monthly stats current (they survive the
+        # weekly log archive — the numbers must be final before the logs are
+        # deleted, so they are recomputed here and again by the archive).
+        try:
+            update_current_stats()
+        except Exception:  # noqa: BLE001 - stats must never break a scrape
+            logger.exception("Could not update scrape stats")
 
         failed = [slug for slug, outcome in results.items() if outcome != "success"]
         if failed:

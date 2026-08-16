@@ -10,11 +10,19 @@ page hits that did not return HTTP 200 (which website, which page, which log
 row) and failed/partial runs (with their errors). Enough to manage every
 website from a single command.
 """
+from datetime import date
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import SITE_LOG_MODELS, ScrapeLog
-from core.reporting import api_issues_for_day, defaulted_deadline_summary
+from core.reporting import (
+    api_issues_for_day,
+    defaulted_deadline_summary,
+    month_bounds,
+    stat_block,
+    week_bounds,
+)
 
 
 class Command(BaseCommand):
@@ -46,6 +54,11 @@ class Command(BaseCommand):
             self._report_day(day)
 
     def _report_day(self, day):
+        # The persistent week/month stats are shown when reporting TODAY (the
+        # live report — the same moment the Telegram digest carries them):
+        # Sundays show the completed Mon–Sun week, the month's last day the
+        # completed month. Historical days keep --all output clean.
+        show_periods = day == timezone.localdate().isoformat()
         master = ScrapeLog.objects.filter(day=day).first()
         if master is None:
             self.stdout.write(self.style.WARNING(f"--- {day}: no master log ---"))
@@ -79,6 +92,15 @@ class Command(BaseCommand):
             )
             for line in defaulted:
                 self.stdout.write(f"    - {line}")
+
+        if show_periods:
+            report_day = date.fromisoformat(day)
+            if report_day.weekday() == 6:  # Sunday
+                for line in stat_block("week", week_bounds(report_day)[0]):
+                    self.stdout.write(line)
+            if report_day.day == month_bounds(report_day)[1].day:  # last day of month
+                for line in stat_block("month", month_bounds(report_day)[0]):
+                    self.stdout.write(line)
 
         if not issues:
             site_log_count = sum(
