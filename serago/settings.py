@@ -5,6 +5,7 @@ Database defaults to local SQLite for development/tests. Set the DB_* env
 vars (see .env.example) to point at the shared Neon PostgreSQL instance.
 """
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -98,6 +99,18 @@ DATABASES = {
         "PORT": os.environ.get("DB_PORT", ""),
     }
 }
+
+# The test suite runs on a LOCAL SQLite database instead of the configured
+# database (Neon in CI / production). The report digest runs the full test
+# suite on the CI runner, where DB_* points at Neon — a remote connection
+# blip there randomly failed tests ("server closed the connection"). Local
+# SQLite keeps the suite fast and deterministic. Set TEST_USE_POSTGRES=1 to
+# opt back into running tests against the configured database.
+if "test" in sys.argv and not os.environ.get("TEST_USE_POSTGRES"):
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": str(BASE_DIR / "test_db.sqlite3"),
+    }
 
 
 # Password validation

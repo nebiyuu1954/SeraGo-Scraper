@@ -2333,6 +2333,45 @@ class TelegramReportTests(TestCase):
         self.assertIn("87 passed", result)
         self.assertNotIn("FAILED", result)
 
+    def test_digest_nags_when_last_commit_is_stale(self):
+        # A >45-day gap since the last push means the schedule is running on
+        # stale code (a push is what keeps the cron alive) — the digest must
+        # nag so it can't quietly rot.
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)  # past 20:30 UTC
+        fake_run = mock.Mock(returncode=0, stdout="Ran 1 tests\n\nOK\n", stderr="")
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ), mock.patch(
+            "core.management.commands.telegram_report.subprocess.run",
+            return_value=fake_run,
+        ), mock.patch(
+            "core.management.commands.telegram_report.last_commit_age_days",
+            return_value=60,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("Last commit 60 days ago", text)
+
+    def test_digest_stays_quiet_for_recent_commit(self):
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)
+        fake_run = mock.Mock(returncode=0, stdout="Ran 1 tests\n\nOK\n", stderr="")
+        with self._post() as fake_post, self._env(NOTIFY_MODE="daily"), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ), mock.patch(
+            "core.management.commands.telegram_report.subprocess.run",
+            return_value=fake_run,
+        ), mock.patch(
+            "core.management.commands.telegram_report.last_commit_age_days",
+            return_value=3,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertNotIn("Last commit", text)
+
     def test_digest_skips_tests_with_flag(self):
         ScrapeLog.objects.create(day=self.TODAY)
         fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)
@@ -2341,7 +2380,13 @@ class TelegramReportTests(TestCase):
             return_value=fixed,
         ), mock.patch(
             "core.management.commands.telegram_report.subprocess.run"
-        ) as fake_run:
+        ) as fake_run, mock.patch(
+            # The 45-day check shells out to `git` through the same stdlib
+            # subprocess module — pin it so this test only asserts that
+            # --skip-tests prevents the TEST suite from running.
+            "core.management.commands.telegram_report.last_commit_age_days",
+            return_value=3,
+        ):
             call_command(
                 "telegram_report",
                 "--skip-tests",

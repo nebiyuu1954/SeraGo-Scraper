@@ -19,6 +19,7 @@ Used by the ``log_report`` / ``telegram_report`` management commands and by
 """
 from __future__ import annotations
 
+import subprocess
 from collections import Counter
 from datetime import date, datetime, timedelta
 
@@ -34,6 +35,35 @@ from core.models import (
     ScrapeStatus,
     ScrapedItem,
 )
+
+
+def last_commit_age_days() -> int | None:
+    """Days since this repo's last commit, or None if it can't be determined.
+
+    Runs ``git log`` in the current directory. On GitHub Actions the checkout
+    IS the last pushed commit, so this measures how long the schedule has
+    gone without a push — a >45-day gap usually means the cron quietly died
+    or was forgotten, so the daily report nags about it (and a fresh commit
+    is the only thing that keeps the schedule alive). Returns None when git
+    isn't available or the directory isn't a checkout, so the report simply
+    skips the reminder instead of failing.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-1", "--format=%cI"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        commit_day = date.fromisoformat(proc.stdout.strip()[:10])
+    except ValueError:
+        return None
+    return (timezone.localdate() - commit_day).days
 
 
 def api_issues_for_day(day: date | None = None) -> list[dict]:

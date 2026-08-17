@@ -49,6 +49,7 @@ from core.models import ScrapeLog, ScrapeStatus
 from core.reporting import (
     api_issues_for_day,
     defaulted_deadline_summary,
+    last_commit_age_days,
     month_bounds,
     silent_zero_sources_for_day,
     stat_block,
@@ -251,6 +252,18 @@ class Command(BaseCommand):
                 if month_block:
                     lines.append("")
                     lines.extend(month_block)
+
+            # 45-day commit reminder: on GitHub Actions the checkout is the
+            # last pushed commit, so a gap this long means the schedule is
+            # running on stale code (or nobody is looking). A push is the
+            # only thing that keeps the cron alive — nag once a day.
+            commit_age = last_commit_age_days()
+            if commit_age is not None and commit_age > 45:
+                lines.append("")
+                lines.append(
+                    f"⏳ Last commit {commit_age} days ago — push something to "
+                    "keep the schedule alive"
+                )
 
         return "\n".join(lines), has_issues
 
