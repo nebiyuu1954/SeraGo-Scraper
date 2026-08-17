@@ -18,6 +18,7 @@ from django.utils import timezone
 from core.models import SITE_LOG_MODELS, ScrapeLog
 from core.reporting import (
     api_issues_for_day,
+    deep_sweep_sources_for_day,
     defaulted_deadline_summary,
     month_bounds,
     silent_zero_sources_for_day,
@@ -106,6 +107,20 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"    - {s['name']} ({s['website']}): {s['run_count']} run(s), "
                     f"{s['api_hits']} api hit(s), 0 found"
+                )
+
+        # A 20+ page sweep means the today-filter was off (a backfill) or the
+        # boundary broke — surface it so an accidental full-catalog pull is
+        # never silent.
+        deep = deep_sweep_sources_for_day(date.fromisoformat(day))
+        if deep:
+            self.stdout.write(
+                self.style.WARNING("  Deep sweep — a run read the whole catalog:")
+            )
+            for d in deep:
+                self.stdout.write(
+                    f"    - {d['name']} ({d['website']}): {d['pages']} pages, "
+                    f"{d['found']} found, {d['inserted']} inserted ({d['status']})"
                 )
 
         if show_periods:

@@ -48,6 +48,7 @@ from django.utils import timezone
 from core.models import ScrapeLog, ScrapeStatus
 from core.reporting import (
     api_issues_for_day,
+    deep_sweep_sources_for_day,
     defaulted_deadline_summary,
     last_commit_age_days,
     month_bounds,
@@ -235,6 +236,21 @@ class Command(BaseCommand):
             lines.append(
                 "(non-Sunday 0-item day — check the site/render, not just the logs)"
             )
+            has_issues = True
+
+        # Runs that swept the whole catalog (20+ pages) — a backfill pulls in
+        # weeks of old listings and should never be silent, even when the day
+        # otherwise looks healthy.
+        deep = deep_sweep_sources_for_day(date.fromisoformat(day))
+        if deep:
+            lines.append("")
+            lines.append("⚠️ Deep sweep — a run read the whole catalog")
+            for d in deep:
+                lines.append(
+                    f"• {d['name']} ({d['website']}): {d['pages']} pages, "
+                    f"{d['found']} found, {d['inserted']} inserted "
+                    f"({d['status']}) — was this a backfill?"
+                )
             has_issues = True
 
         # Persistent week/month stats — once per period, on the final report

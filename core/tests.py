@@ -45,6 +45,7 @@ from core.models import (
 from core.management.commands.telegram_report import Command as TelegramReportCommand
 from core.reporting import (
     api_issues_for_day,
+    deep_sweep_sources_for_day,
     month_bounds,
     recompute_sector_stats,
     recompute_stat,
@@ -1856,6 +1857,66 @@ class SilentZeroTests(TestCase):
         call_command("log_report", "--day", self.DAY.isoformat(), stdout=out)
         self.assertIn("Possible silent failure", out.getvalue())
         self.assertIn("Ethiopian Reporter Jobs", out.getvalue())
+
+
+class DeepSweepTests(TestCase):
+    """A run that swept the whole catalog (20+ pages) must be flagged — the
+    Aug-16 backfill pulled 761 old jobs in one silent sweep."""
+
+    DAY = date(2026, 8, 15)  # Saturday
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="afriwork",
+            name="Afriwork",
+            endpoint="https://example.com/graphql",
+        )
+
+    def _site_log(self, pages=3, status=ScrapeStatus.SUCCESS):
+        return AfriworkScrapeLog.objects.create(
+            source=self.source,
+            day=self.DAY,
+            status=status,
+            run_count=1,
+            api_hits=pages,
+            items_found=pages * 10,
+            items_inserted=5,
+            items_updated=0,
+            items_skipped=pages * 10 - 5,
+            scraped_log=[
+                {
+                    "status": status,
+                    "errors": [],
+                    "message": "",
+                    "api_hits": pages,
+                    "pages_hit": [
+                        {"page": i, "found": 10, "http_status": 200}
+                        for i in range(pages)
+                    ],
+                    "items_found": pages * 10,
+                    "items_inserted": 5,
+                }
+            ],
+        )
+
+    def test_flags_deep_sweep(self):
+        self._site_log(pages=25)
+        flagged = deep_sweep_sources_for_day(self.DAY)
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged[0]["website"], "afriwork")
+        self.assertEqual(flagged[0]["pages"], 25)
+
+    def test_does_not_flag_normal_run(self):
+        self._site_log(pages=5)
+        self.assertEqual(deep_sweep_sources_for_day(self.DAY), [])
+
+    def test_report_mentions_deep_sweep(self):
+        self._site_log(pages=30)
+        ScrapeLog.objects.create(day=self.DAY, status=ScrapeStatus.SUCCESS)
+        out = io.StringIO()
+        call_command("log_report", "--day", self.DAY.isoformat(), stdout=out)
+        self.assertIn("Deep sweep", out.getvalue())
+        self.assertIn("Afriwork", out.getvalue())
 
 
 class DayLogTests(TestCase):

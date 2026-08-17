@@ -140,6 +140,50 @@ def silent_zero_sources_for_day(day: date | None = None) -> list[dict]:
     return flagged
 
 
+#: A normal today-filtered run reads 1–5 pages then stops at the first
+#: past-today page. A sweep well past that (20+) means the run was a full
+#: catalog pull (backfill via --no-today) or the boundary broke — flag it
+#: so an accidental backfill is visible within hours, not days.
+DEEP_SWEEP_PAGE_THRESHOLD = 20
+
+
+def deep_sweep_sources_for_day(day: date | None = None) -> list[dict]:
+    """Sources that swept the whole catalog (backfill) on a given day.
+
+    With the client-side today stop, a normal run reads 1–5 pages; a run
+    with more than :data:`DEEP_SWEEP_PAGE_THRESHOLD` pages hit means the
+    today-filter was off (``--no-today`` backfill) or the boundary broke.
+    Both deserve a report line — a backfill pulls in weeks of old listings
+    (the Aug-16 incident: 761 old jobs entered with one sweep) and should
+    never be silent. Returns one dict per flagged source
+    (``website`` / ``name`` / ``pages`` / ``found`` / ``inserted`` /
+    ``status``), for its deepest run of the day.
+    """
+    day = day or timezone.localdate()
+    flagged: list[dict] = []
+    for model in SITE_LOG_MODELS:
+        site_logs = model.objects.select_related("source").filter(day=day)
+        for site_log in site_logs:
+            deep_runs = [
+                run
+                for run in (site_log.scraped_log or [])
+                if len(run.get("pages_hit") or []) > DEEP_SWEEP_PAGE_THRESHOLD
+            ]
+            if deep_runs:
+                worst = max(deep_runs, key=lambda run: len(run.get("pages_hit") or []))
+                flagged.append(
+                    {
+                        "website": site_log.source.slug,
+                        "name": site_log.source.name,
+                        "pages": len(worst.get("pages_hit") or []),
+                        "found": worst.get("items_found", 0),
+                        "inserted": worst.get("items_inserted", 0),
+                        "status": worst.get("status", ""),
+                    }
+                )
+    return flagged
+
+
 def defaulted_deadline_summary(max_per_source: int = 3) -> list[str]:
     """Human-readable lines about listings whose deadline was defaulted.
 
