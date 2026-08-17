@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta
@@ -128,12 +129,39 @@ def sha256_hex(*values: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Block-level elements that terminate a line when converting HTML to text.
+_HTML_BLOCK_TAGS = [
+    "p", "div", "section", "article", "header", "footer", "main", "aside",
+    "h1", "h2", "h3", "h4", "h5", "h6", "tr", "blockquote", "ul", "ol",
+    "table", "dl", "dt", "dd", "figure", "figcaption", "pre",
+]
+
+
 def transform_strip_html(value: Any) -> str | None:
-    """Strip HTML tags, unescape entities and collapse whitespace."""
+    """Convert HTML to plain text, preserving the source's block structure.
+
+    Paragraph/heading boundaries become line breaks, ``<li>`` items become
+    "• " bullets and ``<br>`` becomes a newline — so the section layout the
+    source site renders (About Us, Key Responsibilities, Skills, How to
+    Apply…) survives instead of being flattened into one long paragraph.
+    """
     if value is None:
         return None
-    text = BeautifulSoup(str(value), "html.parser").get_text(" ")
-    return " ".join(text.split()) or None
+    soup = BeautifulSoup(str(value), "html.parser")
+    # Block boundaries become newlines; list items become bullet lines.
+    for tag in soup.find_all(_HTML_BLOCK_TAGS):
+        tag.append("\n")
+    for li in soup.find_all("li"):
+        li.insert(0, "• ")
+        li.append("\n")
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    text = soup.get_text(" ")
+    lines = [
+        re.sub(r"[ \t]+", " ", line).strip()
+        for line in text.split("\n")
+    ]
+    return "\n".join(line for line in lines if line) or None
 
 
 def transform_clean_text(value: Any) -> str | None:
