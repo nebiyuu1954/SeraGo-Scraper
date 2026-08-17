@@ -55,7 +55,12 @@ from core.reporting import (
     week_bounds,
     year_bounds,
 )
-from core.scrapers.base import LIFECYCLE_GRACE_DAYS, ScrapeError, transform_job_type_code
+from core.scrapers.base import (
+    LIFECYCLE_GRACE_DAYS,
+    ScrapeError,
+    transform_job_type_code,
+    transform_strip_html,
+)
 from core.scrapers.geezjobs import GeezJobsScraper
 from core.scrapers.graphql import AfriworkJobsScraper, GraphQLScraper
 from core.scrapers.hahujobs import HaHuJobsScraper
@@ -645,6 +650,44 @@ class StructureTests(TestCase):
         self.assertEqual(transform_job_type_code(1), "FULL_TIME")
         self.assertEqual(transform_job_type_code(3), "CONTRACT")
         self.assertIsNone(transform_job_type_code(None))
+
+    def test_strip_html_preserves_block_structure(self):
+        html = (
+            "<p>VACANCY ANNOUNCEMENT</p>"
+            "<p>Position: Senior Sales Engineer</p>"
+            "<p>About Us</p>"
+            "<p>We are a company &amp; we build things.</p>"
+            "<p>Key Responsibilities</p>"
+            "<ul><li><p>Prepare bids</p></li><li><p>Manage submissions</p></li></ul>"
+            "<p>Skills:</p>"
+            "<ul><li>MS Office</li><li>Attention to detail</li></ul>"
+            "<p>How to Apply</p>"
+            "<p>Send your CV<br />by email</p>"
+        )
+        self.assertEqual(
+            transform_strip_html(html),
+            "VACANCY ANNOUNCEMENT\n"
+            "Position: Senior Sales Engineer\n"
+            "About Us\n"
+            "We are a company & we build things.\n"
+            "Key Responsibilities\n"
+            "• Prepare bids\n"
+            "• Manage submissions\n"
+            "Skills:\n"
+            "• MS Office\n"
+            "• Attention to detail\n"
+            "How to Apply\n"
+            "Send your CV\n"
+            "by email",
+        )
+
+    def test_strip_html_handles_none_and_plain_text(self):
+        self.assertIsNone(transform_strip_html(None))
+        self.assertEqual(
+            transform_strip_html("Diploma or Bachelor's Degree with work experience"),
+            "Diploma or Bachelor's Degree with work experience",
+        )
+        self.assertEqual(transform_strip_html(""), None)
 
 
 class RequestRetryTests(TestCase):
@@ -2855,5 +2898,33 @@ class GraphQLTodayBoundaryTests(TestCase):
 
     def test_past_today_boundary_stops_on_all_old_page(self):
         self.assertTrue(self.scraper._past_today_boundary(3, [self.old, self.old]))
+
+    def test_normalize_formats_structured_compensation_into_salary(self):
+        item = self.scraper.normalize(
+            {
+                "id": "abc",
+                "compensation_amount_cents": 1800000,
+                "compensation_currency": "ETB",
+                "compensation_type": "MONTHLY",
+            }
+        )
+        self.assertEqual(item["salary"], "18,000 ETB monthly")
+
+    def test_normalize_formats_fixed_compensation_without_frequency(self):
+        item = self.scraper.normalize(
+            {
+                "id": "abc",
+                "compensation_amount_cents": 50000,
+                "compensation_currency": "ETB",
+                "compensation_type": "FIXED",
+            }
+        )
+        self.assertEqual(item["salary"], "500 ETB")
+
+    def test_normalize_leaves_salary_unset_without_compensation(self):
+        item = self.scraper.normalize(
+            {"id": "abc", "compensation_amount_cents": None}
+        )
+        self.assertNotIn("salary", item)
         self.assertFalse(self.scraper._past_today_boundary(3, [self.new]))
         self.assertFalse(self.scraper._past_today_boundary(3, [self.new, self.old]))
