@@ -195,6 +195,28 @@ class AfriworkJobsScraper(GraphQLScraper):
         item = super().normalize(raw_item)
         if not item.get("url") and raw_item.get("id"):
             item["url"] = f"https://afriworket.com/jobs/{raw_item['id']}"
+        # The API returns compensation as structured fields (cents + currency +
+        # frequency) rather than a salary string — format it into the shared
+        # ``salary`` text so the master row (and SeraGo's sync) carries the
+        # money instead of losing it.
+        cents = raw_item.get("compensation_amount_cents")
+        currency = (raw_item.get("compensation_currency") or "").strip().upper()
+        if cents and currency:
+            amount = int(cents) / 100
+            frequency = {
+                "MONTHLY": "monthly",
+                "ANNUALLY": "annually",
+                "YEARLY": "yearly",
+                "WEEKLY": "weekly",
+                "DAILY": "daily",
+                "HOURLY": "hourly",
+                "FIXED": "",
+                "ONE_TIME": "",
+            }.get(
+                (raw_item.get("compensation_type") or "").strip().upper(),
+                "",
+            )
+            item["salary"] = f"{amount:,.0f} {currency} {frequency}".strip()
         return item
 
     # -- client-side today guard (mirrors RestJsonScraper) --
