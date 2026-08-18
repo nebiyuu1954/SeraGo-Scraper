@@ -175,9 +175,13 @@ DB_HOST=...
 DB_PORT=5432
 ETHIOJOBS_TOKEN=...    # same token as local .env (fresh one from ethiojobs.net/jobs Network tab if it expired)
 JINA_API_KEY=...       # optional; free key from jina.ai raises the relay request limit
-SCRAPFLY_API_KEY=...   # required for sites with pagination.relay="scrapfly" (e.g.
-                       # ReporterJobs — its Cloudflare challenges free relays);
-                       # free key from scrapfly.io (1,000 credits/month)
+# Anti-bot rotation backends (all optional — see CLOUDFLARE.md for the full
+# rotation strategy and credit math). The scraper uses whichever are configured.
+SCRAPFLY_API_KEY=...   # scrapfly.io → API Keys (free: 1,000 credits/mo)
+ZENROWS_API_KEY=...    # zenrows.com → API Keys (free: 5,000 credits/mo)
+SCRAPE_DO_API_KEY=...  # scrape.do → API Token (free: 1,000 credits/mo)
+SCRAPEBADGER_API_KEY=... # scrapebadger.com → API Key (free: 1,000 credits/mo)
+SCRAPERAPI_KEY=...     # scraperapi.com → API Key (free: 1,000 credits/mo)
 ```
 
 Then re-run `bash setup_vm.sh` — it picks up where it left off.

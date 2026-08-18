@@ -173,6 +173,13 @@ JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 # protection and renders JavaScript, for sites the free Jina relay can't reach.
 SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "")
 
+# Anti-bot rotation backends (all optional — the scraper uses whichever are configured).
+# See CLOUDFLARE.md for the full rotation strategy, credit math, and per-service docs.
+ZENROWS_API_KEY = os.environ.get("ZENROWS_API_KEY", "")
+SCRAPE_DO_API_KEY = os.environ.get("SCRAPE_DO_API_KEY", "")
+SCRAPEBADGER_API_KEY = os.environ.get("SCRAPEBADGER_API_KEY", "")
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
+
 
 # Logging — observable, structured console logs (Flower/Celery later).
 

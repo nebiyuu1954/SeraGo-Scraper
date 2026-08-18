@@ -118,6 +118,75 @@ class Source(TimeStampedModel):
         return self.name
 
 
+class ScraperCreditUsage(TimeStampedModel):
+    """Tracks anti-bot API credit usage per service per month.
+
+    Each successful request through the Cloudflare rotation logs one row.
+    The scraper checks remaining credits before each request; when a service
+    hits 0 it is skipped for the rest of the month. Counts reset monthly
+    (the ``month`` field is YYYY-MM).
+    """
+
+    SERVICE_CHOICES = [
+        ("zenrows", "ZenRows"),
+        ("scrapedo", "Scrape.do"),
+        ("scrapebadger", "ScrapeBadger"),
+        ("scrapfly", "ScrapFly"),
+        ("scraperapi", "ScraperAPI"),
+    ]
+    SERVICE_CREDITS_PER_REQUEST = {
+        "zenrows": 25,
+        "scrapedo": 1,
+        "scrapebadger": 2,
+        "scrapfly": 50,
+        "scraperapi": 25,
+    }
+    SERVICE_MONTHLY_FREE_CREDITS = {
+        "zenrows": 5000,
+        "scrapedo": 1000,
+        "scrapebadger": 1000,
+        "scrapfly": 1000,
+        "scraperapi": 1000,
+    }
+
+    service = models.CharField(max_length=20, choices=SERVICE_CHOICES)
+    credits_used = models.PositiveIntegerField(default=0)
+    month = models.CharField(
+        max_length=7,
+        help_text="YYYY-MM — resets each calendar month",
+    )
+    source_slug = models.SlugField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Which source triggered this credit use",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["service", "month"], name="credit_svc_month_idx"),
+        ]
+        verbose_name = "Scraper credit usage"
+        verbose_name_plural = "Scraper credit usage"
+
+    def __str__(self):
+        return f"{self.service} {self.month}: {self.credits_used} credits"
+
+    @classmethod
+    def remaining_credits(cls, service: str, month: str | None = None) -> int:
+        """Credits still available for ``service`` in the given month."""
+        if month is None:
+            from django.utils import timezone
+            month = timezone.localdate().strftime("%Y-%m")
+        used = (
+            cls.objects.filter(service=service, month=month)
+            .aggregate(total=models.Sum("credits_used"))["total"]
+            or 0
+        )
+        free = cls.SERVICE_MONTHLY_FREE_CREDITS.get(service, 0)
+        return max(0, free - used)
+
+
 class ScrapedItem(TimeStampedModel):
     """A normalized job listing. Deduplicated per (source, external_id)."""
 

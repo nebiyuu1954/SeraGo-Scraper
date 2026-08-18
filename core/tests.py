@@ -1620,6 +1620,119 @@ class GeezJobsScraperTests(TestCase):
         self.assertIsInstance(scraper, HtmlScraper)
 
 
+class CloudflareRotationTests(TestCase):
+    """Tests for the smart Cloudflare rotation dispatcher."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="test-cf",
+            name="Test CF Site",
+            endpoint="https://example.com/jobs",
+            scraper_type="html",
+            only_today=True,
+            pagination={"relay": "cloudflare_rotate", "timeout": 10.0},
+        )
+        self.scraper = HtmlScraper(self.source)
+
+    def test_rotation_tries_scrapedo_first_when_configured(self):
+        """The rotation picks the cheapest available backend (Scrape.do first)."""
+        calls: list[str] = []
+
+        def fake_dispatch(service, url, page):
+            calls.append(service)
+            from bs4 import BeautifulSoup
+            return BeautifulSoup("<html><body><div class='card'></div></body></html>", "html.parser")
+
+        with override_settings(
+            SCRAPE_DO_API_KEY="test-key",
+            SCRAPEBADGER_API_KEY="",
+            ZENROWS_API_KEY="",
+            SCRAPERAPI_KEY="",
+            SCRAPFLY_API_KEY="",
+        ), mock.patch.object(self.scraper, "_dispatch_single_backend", side_effect=fake_dispatch), \
+             mock.patch("core.models.ScraperCreditUsage.objects.create") as mock_create, \
+             mock.patch("core.models.ScraperCreditUsage.remaining_credits", return_value=100):
+            self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
+        self.assertEqual(calls, ["scrapedo"])
+        mock_create.assert_called_once_with(
+            service="scrapedo",
+            credits_used=1,
+            month=timezone.localdate().strftime("%Y-%m"),
+            source_slug="test-cf",
+        )
+
+    def test_rotation_skips_missing_keys_and_exhausted_credits(self):
+        """Services without API keys or with 0 credits are skipped."""
+        calls: list[str] = []
+
+        def fake_dispatch(service, url, page):
+            calls.append(service)
+            from bs4 import BeautifulSoup
+            return BeautifulSoup("<html></html>", "html.parser")
+
+        def fake_remaining(service, month=None):
+            return 0 if service == "scrapedo" else 100
+
+        with override_settings(
+            SCRAPE_DO_API_KEY="test-key",
+            ZENROWS_API_KEY="test-key",
+            SCRAPEBADGER_API_KEY="",
+            SCRAPERAPI_KEY="",
+            SCRAPFLY_API_KEY="",
+        ), mock.patch.object(self.scraper, "_dispatch_single_backend", side_effect=fake_dispatch), \
+             mock.patch("core.models.ScraperCreditUsage.remaining_credits", side_effect=fake_remaining), \
+             mock.patch("core.models.ScraperCreditUsage.objects.create"):
+            self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
+        # scrapedo skipped (0 credits), scrapebadger skipped (no key), zenrows used
+        self.assertEqual(calls, ["zenrows"])
+
+    def test_rotation_raises_when_all_backends_fail(self):
+        """When every backend fails, a clear ScrapeError is raised."""
+        def fake_dispatch(service, url, page):
+            raise ScrapeError(f"{service} failed")
+
+        with override_settings(
+            SCRAPE_DO_API_KEY="test-key",
+            ZENROWS_API_KEY="test-key",
+            SCRAPEBADGER_API_KEY="",
+            SCRAPERAPI_KEY="",
+            SCRAPFLY_API_KEY="",
+        ), mock.patch.object(self.scraper, "_dispatch_single_backend", side_effect=fake_dispatch), \
+             mock.patch("core.models.ScraperCreditUsage.remaining_credits", return_value=100):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
+        self.assertIn("exhausted", str(ctx.exception))
+        self.assertIn("scrapedo", str(ctx.exception))
+        self.assertIn("zenrows", str(ctx.exception))
+
+    def test_rotation_raises_when_no_keys_configured(self):
+        """With no API keys at all, the error says so."""
+        with override_settings(
+            SCRAPE_DO_API_KEY="",
+            ZENROWS_API_KEY="",
+            SCRAPEBADGER_API_KEY="",
+            SCRAPERAPI_KEY="",
+            SCRAPFLY_API_KEY="",
+        ):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
+        self.assertIn("no configured backends", str(ctx.exception))
+
+    def test_credit_usage_model_remaining_credits(self):
+        """remaining_credits computes free - used correctly."""
+        from core.models import ScraperCreditUsage
+        month = timezone.localdate().strftime("%Y-%m")
+        # No usage yet → full free tier.
+        self.assertEqual(ScraperCreditUsage.remaining_credits("scrapedo", month), 1000)
+        # Create some usage.
+        ScraperCreditUsage.objects.create(
+            service="scrapedo", credits_used=250, month=month, source_slug="test",
+        )
+        self.assertEqual(ScraperCreditUsage.remaining_credits("scrapedo", month), 750)
+        # Unknown service returns 0.
+        self.assertEqual(ScraperCreditUsage.remaining_credits("unknown", month), 0)
+
+
 class ReporterJobsScraperTests(TestCase):
     """The Ethiopian Reporter Jobs HTML scraper: card parsing, exact dates, today filter, detail row."""
 
@@ -2797,13 +2910,14 @@ class TelegramReportTests(TestCase):
 
 
 class SeedSourcesCommandTests(TestCase):
-    def test_seed_sources_sets_reporterjobs_to_scrapfly_relay(self):
+    def test_seed_sources_sets_reporterjobs_to_cloudflare_rotate(self):
         # ReporterJobs is behind a Cloudflare challenge that the free Jina
-        # relay can no longer beat — it must seed on the ScrapFly anti-bot
-        # backend (asp + render_js).
+        # relay can no longer beat — it must seed on the cloudflare_rotate
+        # backend (smart rotation across ZenRows, Scrape.do, ScrapeBadger,
+        # ScrapFly, ScraperAPI). See CLOUDFLARE.md.
         call_command("seed_sources", stdout=io.StringIO())
         reporter = Source.objects.get(slug="reporterjobs")
-        self.assertEqual((reporter.pagination or {}).get("relay"), "scrapfly")
+        self.assertEqual((reporter.pagination or {}).get("relay"), "cloudflare_rotate")
 
 
 class ArchiveWeekCommandTests(TestCase):

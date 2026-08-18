@@ -342,17 +342,15 @@ REPORTER_PAGINATION = {
     # unused with max_pages=1.
     "page_1_based": True,
     "page_style": "path",
-    # Fetch through the ScrapFly anti-bot API (pagination.relay="scrapfly"):
-    # the site's Cloudflare now challenges every free access path (direct
-    # requests, the r.jina.ai relay, even headless browsers), so the source
-    # uses ScrapFly's asp bypass + render_js — see HtmlScraper._fetch_via_scrapfly.
-    # Needs SCRAPFLY_API_KEY (repo secret / settings.env). Note the free tier
-    # (1,000 credits/month) is roughly 12–20 requests here — asp + render_js
-    # costs ~45–80 credits per request — so this source alone eats the free
-    # tier in about a week at 2 runs/day; a paid plan is expected long-term.
-    # The timeout is raised because asp + render_js takes a while (ScrapFly's
-    # own read timeout is 155s).
-    "relay": "scrapfly",
+    # Fetch through the Cloudflare rotation backend (pagination.relay=
+    # "cloudflare_rotate"): the site's Cloudflare challenges every free access
+    # path, so the source uses the smart rotation across ZenRows, Scrape.do,
+    # ScrapeBadger, ScrapFly, and ScraperAPI — see
+    # HtmlScraper._fetch_via_cloudflare_rotate and CLOUDFLARE.md. The rotation
+    # picks the cheapest available service with remaining monthly credits,
+    # so the free tiers of all 5 services are maximized. The timeout is raised
+    # because anti-bot backends with JS rendering take a while.
+    "relay": "cloudflare_rotate",
     "timeout": 160.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
