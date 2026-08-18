@@ -168,6 +168,11 @@ ETHIOJOBS_TOKEN = os.environ.get("ETHIOJOBS_TOKEN", "")
 # a key). See core/scrapers/html.py.
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 
+# Optional ScrapFly API key (https://scrapfly.io) — enables the anti-bot
+# fetch backend (pagination.relay="scrapfly") that bypasses Cloudflare-style
+# protection and renders JavaScript, for sites the free Jina relay can't reach.
+SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "")
+
 
 # Logging — observable, structured console logs (Flower/Celery later).
 

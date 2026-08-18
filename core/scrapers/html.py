@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 from django.conf import settings
 from django.utils import timezone
 
-from .base import DEFAULT_RETRIES, BaseScraper, request_with_retry, transform_parse_datetime
+from .base import DEFAULT_RETRIES, BaseScraper, ScrapeError, request_with_retry, transform_parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +49,49 @@ RELAY_BACKOFF_SECONDS = 3.0
 #: ``pagination.relay_retries``.
 DEFAULT_RELAY_RETRIES = 2
 
+#: Substrings that mark Cloudflare's bot-check interstitial ("Just a
+#: moment...", Turnstile). A relayed fetch answers with it as HTTP 200 — the
+#: relay itself got through — so only the BODY can reveal it. The target site
+#: may serve it to every requester (Under Attack / strict managed challenge),
+#: or only sometimes; either way the scraper must never mistake it for the
+#: real page. Keep the list tight: Cloudflare-fronted sites routinely include
+#: ``/cdn-cgi/challenge-platform`` scripts on REAL pages, so that path is
+#: deliberately NOT a marker — only the interstitial's own title and the
+#: Turnstile origin are.
+CHALLENGE_MARKERS = (
+    "just a moment",
+    "challenges.cloudflare.com",
+)
+
+
+class CloudflareChallengeError(ScrapeError):
+    """The target answered with Cloudflare's bot-check page, not the content."""
+
+
+def is_cloudflare_challenge(text: str) -> bool:
+    """True when the body is Cloudflare's challenge interstitial."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in CHALLENGE_MARKERS)
+
 # Base URL of the r.jina.ai reader relay (free tier: ~20 req/min without a
 # key, 500 req/min with a free JINA_API_KEY). When a source sets
 # ``pagination.relay: "jina"`` its pages are fetched from Jina's own
 # infrastructure, so the target site never sees our IP — a WAF that blocks us
 # (e.g. GeezJobs' Hostinger edge returning 403) does not block Jina's.
 JINA_BASE_URL = "https://r.jina.ai"
+
+# ScrapFly anti-bot scraping API (pagination.relay="scrapfly"). Unlike the
+# free Jina relay, it actively bypasses anti-scraping systems (asp) and
+# renders JavaScript in a cloud browser (render_js) — the right backend for
+# sites behind a Cloudflare challenge (e.g. Ethiopian Reporter Jobs) and for
+# JS-rendered listings. The response is the JSON envelope (result.content
+# holds the target's rendered HTML, result.status_code the target's status)
+# — proxified_response was tried but the target's challenge consistently
+# beat it, while the JSON envelope returns the real page.
+SCRAPFLY_API_URL = "https://api.scrapfly.io/scrape"
+#: ScrapFly's own read timeout is 155s (asp + render_js can take a while);
+#: the client must not cut it short. Tunable per source via ``pagination.timeout``.
+SCRAPFLY_TIMEOUT = 160.0
 
 # Full and abbreviated month names for the shared date-text parser below.
 # (GeezJobs shows 'September 7, 2026'; Ethiopian Reporter Jobs shows
@@ -143,8 +180,14 @@ class HtmlScraper(BaseScraper):
 
     def fetch(self, page: int = 0) -> BeautifulSoup:
         """GET one listing page and return its parsed DOM."""
-        url = self._relay_url(self._page_url(page))
+        url = self._page_url(page)
         relay = (self.source.pagination or {}).get("relay")
+        if relay == "scrapfly":
+            # Anti-bot backend: bypasses Cloudflare-style protection and
+            # renders JS (also fixes the JS-skeleton problem). Needs the
+            # SCRAPFLY_API_KEY env var / setting.
+            return self._fetch_via_scrapfly(url, page)
+        url = self._relay_url(url)
         if relay == "jina":
             # Fetch through the r.jina.ai reader, which requests the target
             # site itself. The source's browser headers are deliberately NOT
@@ -176,6 +219,12 @@ class HtmlScraper(BaseScraper):
         relay_retries = int(
             (self.source.pagination or {}).get("relay_retries", DEFAULT_RELAY_RETRIES)
         )
+        # Per-source backoff between EXTRA attempts (default RELAY_BACKOFF_SECONDS).
+        backoff = float(
+            (self.source.pagination or {}).get(
+                "relay_backoff_seconds", RELAY_BACKOFF_SECONDS
+            )
+        )
         attempts = max(1, retries + (relay_retries if relay else 0))
         response = None
         last_error: Exception | None = None
@@ -196,9 +245,23 @@ class HtmlScraper(BaseScraper):
                         request=httpx.Request("GET", url),
                         response=candidate,
                     )
+                if is_cloudflare_challenge(candidate.text):
+                    # The target answered with its Cloudflare challenge page
+                    # (the relay got through — hence HTTP 200). Treat it like
+                    # a transient failure and retry with backoff: the block
+                    # often lifts, and a fresh relay attempt may egress from a
+                    # different IP. If every attempt is challenged, the run
+                    # fails below with a message that names Cloudflare.
+                    raise CloudflareChallengeError(
+                        f"Cloudflare challenge page returned for {url}"
+                    )
                 response = candidate
                 break
-            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            except (
+                httpx.TransportError,
+                httpx.HTTPStatusError,
+                CloudflareChallengeError,
+            ) as exc:
                 last_error = exc
                 if attempt < attempts - 1:
                     logger.warning(
@@ -206,13 +269,21 @@ class HtmlScraper(BaseScraper):
                         attempt + 1,
                         attempts,
                         exc,
-                        RELAY_BACKOFF_SECONDS * (attempt + 1),
+                        backoff * (attempt + 1),
                     )
-                    time.sleep(RELAY_BACKOFF_SECONDS * (attempt + 1))
+                    time.sleep(backoff * (attempt + 1))
         if response is None:
             # Every attempt failed — raise so the run fails loudly (the day log
             # records a failed run instead of a silent empty success).
             assert last_error is not None
+            if isinstance(last_error, CloudflareChallengeError):
+                raise ScrapeError(
+                    "Blocked by Cloudflare challenge ('Just a moment') — the "
+                    f"site served its bot-check page on all {attempts} "
+                    "attempt(s). This is the site blocking automated access "
+                    "(the relay IPs are flagged); it usually clears on its "
+                    "own — verify the page opens in a normal browser."
+                )
             raise last_error
         # Record the request even when it fails — it still hit the site (or relay).
         # With a relay, the logged http_status is the RELAY's response (e.g. 200
@@ -221,6 +292,127 @@ class HtmlScraper(BaseScraper):
         self._record_api_call(page, response.status_code)
         response.raise_for_status()
         return BeautifulSoup(response.text, "html.parser")
+
+    def _fetch_via_scrapfly(self, url: str, page: int) -> BeautifulSoup:
+        """Fetch a page through the ScrapFly anti-bot API.
+
+        ``asp=true`` turns on anti-scraping bypass (Cloudflare challenges,
+        WAFs); ``render_js=true`` executes the site's JavaScript in a cloud
+        browser (so JS-rendered listings arrive as real cards). The JSON
+        envelope carries the target's rendered HTML in ``result.content`` and
+        the target's own status in ``result.status_code``.
+
+        Requires ``settings.SCRAPFLY_API_KEY`` (env var SCRAPFLY_API_KEY).
+        Account/auth errors (401/402/403) fail immediately; transient blips
+        (429/5xx) and an unbypassed Cloudflare challenge are retried with
+        backoff, then fail loudly.
+        """
+        api_key = getattr(settings, "SCRAPFLY_API_KEY", "") or ""
+        if not api_key:
+            raise ScrapeError(
+                "relay='scrapfly' is configured but SCRAPFLY_API_KEY is not "
+                "set — add it to the repo secrets / .env (scrapfly.io "
+                "dashboard, free tier: 1,000 credits/month)."
+            )
+        params = {
+            "url": url,
+            "key": api_key,
+            "asp": "true",
+            "render_js": "true",
+        }
+        timeout = float((self.source.pagination or {}).get("timeout", SCRAPFLY_TIMEOUT))
+        retries = int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES))
+        backoff = float(
+            (self.source.pagination or {}).get(
+                "relay_backoff_seconds", RELAY_BACKOFF_SECONDS
+            )
+        )
+        attempts = max(1, retries)
+        response = None
+        page_html: str | None = None
+        target_status: int | None = None
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                candidate = httpx.get(SCRAPFLY_API_URL, params=params, timeout=timeout)
+                if candidate.status_code in (401, 402, 403):
+                    # Auth/account problems won't fix themselves — fail now.
+                    raise ScrapeError(
+                        f"ScrapFly rejected the request (HTTP "
+                        f"{candidate.status_code}) — check SCRAPFLY_API_KEY "
+                        "and account credits."
+                    )
+                if candidate.status_code == 429 or candidate.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"ScrapFly returned HTTP {candidate.status_code}",
+                        request=httpx.Request("GET", SCRAPFLY_API_URL),
+                        response=candidate,
+                    )
+                try:
+                    payload = candidate.json()
+                except ValueError as exc:
+                    raise httpx.HTTPStatusError(
+                        "ScrapFly returned a non-JSON body",
+                        request=httpx.Request("GET", SCRAPFLY_API_URL),
+                        response=candidate,
+                    ) from exc
+                result = payload.get("result") or {}
+                content = result.get("content") or ""
+                if is_cloudflare_challenge(content):
+                    # asp did not beat the target's challenge — retry a fresh
+                    # attempt, then fail loudly below if it persists.
+                    raise CloudflareChallengeError(
+                        f"Cloudflare challenge page returned for {url}"
+                    )
+                if not result.get("success"):
+                    # Intermittent: asp occasionally loses to the target's
+                    # WAF ("Forbidden") even though the next attempt
+                    # succeeds — retry with backoff like a transient blip.
+                    raise httpx.HTTPStatusError(
+                        "ScrapFly scrape failed: "
+                        f"{result.get('reason') or result.get('error') or 'unknown reason'}",
+                        request=httpx.Request("GET", SCRAPFLY_API_URL),
+                        response=candidate,
+                    )
+                response = candidate
+                # The target's rendered HTML + its OWN status, so the rest of
+                # the pipeline (parse, _record_api_call) sees a normal page
+                # response.
+                page_html = content
+                target_status = int(result.get("status_code") or candidate.status_code)
+                break
+            except (
+                httpx.TransportError,
+                httpx.HTTPStatusError,
+                CloudflareChallengeError,
+            ) as exc:
+                last_error = exc
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "ScrapFly attempt %d/%d failed (%s) — retrying in %.0fs",
+                        attempt + 1,
+                        attempts,
+                        exc,
+                        backoff * (attempt + 1),
+                    )
+                    time.sleep(backoff * (attempt + 1))
+        if response is None:
+            assert last_error is not None
+            if isinstance(last_error, CloudflareChallengeError):
+                raise ScrapeError(
+                    "Blocked by Cloudflare challenge even through ScrapFly's "
+                    f"anti-bot proxy (asp) on all {attempts} attempt(s) — the "
+                    "site's protection beat the bypass; check the ScrapFly "
+                    "dashboard for the request logs."
+                )
+            raise last_error
+        assert page_html is not None and target_status is not None
+        # The recorded status is the TARGET's own (result.status_code) — so
+        # the day log shows the page's real response (200 = the site served
+        # the feed, even though the API wrapper itself returned 200 either way).
+        self._record_api_call(page, target_status)
+        response.raise_for_status()
+        return BeautifulSoup(page_html, "html.parser")
 
     def parse(self, raw: BeautifulSoup) -> list[dict]:
         """HTML sites are site-specific — subclasses must implement this.

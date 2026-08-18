@@ -17,9 +17,11 @@ Modes (NOTIFY_MODE env var, or --mode):
 
 The message is the FULL day report: the day's status, run/website/api totals,
 per-website found/inserted/skipped numbers, and every failure or unexpected
-response recorded that day. On the final run of the day the command also runs
-the Django test suite once and appends the result (pass/fail, test count,
-duration) — use --skip-tests to disable.
+response recorded that day. On the final run of the day the command ALSO runs
+the Django test suite once and delivers the result (pass/fail, test count,
+duration) as a SHORT FOLLOW-UP message — use --skip-tests to disable. The
+report itself is always sent FIRST, so a slow or hung test run (or a runner
+killed mid-step) can never take the report down with it.
 
 Config (env vars):
   TELEGRAM_BOT_TOKEN  — bot token from @BotFather (add as an Actions secret).
@@ -125,19 +127,28 @@ class Command(BaseCommand):
 
         message = f"🤖 SeraGo — {title} · {day}\n\n{text}"
 
-        # The end-of-day report also runs the test suite once and reports it.
-        if is_digest_run and not options["skip_tests"]:
-            message += "\n\n🧪 Tests\n" + self._run_tests()
-
         if len(message) > MAX_MESSAGE_LENGTH:
             message = message[:MAX_MESSAGE_LENGTH] + "\n…(truncated)"
 
+        # The report goes out FIRST. The end-of-day test suite runs afterwards
+        # as a separate follow-up message — so a slow or hung test run (or a
+        # runner killed mid-step, like the Aug-17 incident) can never take
+        # the report down with it.
         try:
             self._send(token, chat_id, message)
         except Exception as exc:  # noqa: BLE001 — surface any delivery failure
             self.stderr.write(self.style.ERROR(f"Telegram delivery failed: {exc}"))
             raise SystemExit(1)
         self.stdout.write(self.style.SUCCESS("Report sent to Telegram."))
+
+        # The end-of-day test suite, as a short follow-up. Delivery of this
+        # second message is best-effort: the main report is already out, so a
+        # failure here must not fail the workflow step.
+        if is_digest_run and not options["skip_tests"]:
+            try:
+                self._send_test_followup(token, chat_id, day)
+            except Exception as exc:  # noqa: BLE001
+                self.stderr.write(self.style.WARNING(f"Test stats not sent: {exc}"))
 
     def _format_report(self, day: str, is_digest_run: bool) -> tuple[str, bool]:
         """Build the day's report as a tidy message body.
@@ -283,6 +294,13 @@ class Command(BaseCommand):
 
         return "\n".join(lines), has_issues
 
+    def _send_test_followup(self, token: str, chat_id: str, day: str) -> None:
+        """Run the test suite and deliver its result as a short follow-up."""
+        result = self._run_tests()
+        message = f"🧪 Tests · {day}\n{result}"
+        self._send(token, chat_id, message)
+        self.stdout.write(self.style.SUCCESS("Test stats sent to Telegram."))
+
     def _run_tests(self) -> str:
         """Run the test suite once and summarize the outcome for the digest."""
         self.stdout.write(
@@ -294,10 +312,13 @@ class Command(BaseCommand):
                 [sys.executable, "manage.py", "test", "--noinput"],
                 capture_output=True,
                 text=True,
-                timeout=900,
+                # The suite normally finishes in a couple of seconds (local
+                # SQLite); anything near this cap is a hang and must not eat
+                # the whole workflow job.
+                timeout=180,
             )
         except subprocess.TimeoutExpired:
-            return "⏱️ timed out after 15 minutes"
+            return "⏱️ timed out after 3 minutes"
         except Exception as exc:  # noqa: BLE001
             return f"⚠️ could not run: {exc}"
 

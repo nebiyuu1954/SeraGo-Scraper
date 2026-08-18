@@ -294,20 +294,19 @@ GEEZJOBS_PAGINATION = {
     "max_pages": 20,
 }
 
-# Ethiopian Reporter Jobs — WordPress (Noo Job Board theme) server-side HTML:
-# https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/ (path-paginated
-# /page/N/, ~10 archive cards + a pinned "featured" widget per page, newest
-# first). There is no JSON API; the ReporterJobsScraper
-# (core/scrapers/reporterjobs.py) extracts the article.noo_job cards. Cards
-# carry EXACT timestamps (<time datetime=...>) so published_at is precise.
-# The newspaper posts in BATCHES (the current feed is one big August 5
-# batch), so the strict today-only filter truthfully stores nothing on
-# non-posting days and captures each new batch on posting days. The site is
-# behind Cloudflare — a challenge page (no cards, no archive container)
-# raises ScrapeError instead of silently recording an empty feed. Cloudflare
-# also 403s requests from datacenter/runner IPs (GitHub Actions, cloud
-# VMs) outright, so like GeezJobs the source fetches through the free
-# r.jina.ai relay (pagination.relay below) — see HtmlScraper._relay_url/fetch.
+# Ethiopian Reporter Jobs — WordPress (Careerfy theme, mid-2026 redesign)
+# server-side HTML: https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/
+# (~15 cards per page, newest first; the theme loads further pages via an
+# AJAX "Load more", so the sweep is capped at max_pages=1). There is no JSON
+# API; the ReporterJobsScraper (core/scrapers/reporterjobs.py) extracts the
+# div.jobsearch-joblisting-classic-wrap cards. Cards only carry a RELATIVE
+# posting time ("Published X hours ago") — published_at is ESTIMATED — and
+# the theme has the deadline field disabled, so the shared +30-day default
+# applies (surfaced in the daily report's "Defaulted deadlines"). The site
+# is behind Cloudflare and challenges every free access path (direct,
+# r.jina.ai relay, headless browsers), so the source fetches through the
+# ScrapFly anti-bot API (pagination.relay below) — see
+# HtmlScraper._fetch_via_scrapfly.
 REPORTER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -332,23 +331,35 @@ REPORTER_FIELD_MAPPING = {
 }
 
 REPORTER_PAGINATION = {
-    "page_size": 10,
-    # WordPress path pagination: page 1 is the bare /jobs-in-ethiopia/ URL,
-    # page 2 is /jobs-in-ethiopia/page/2/ (page_style="path" in HtmlScraper).
+    # The Careerfy theme shows ~15 cards per page. Only page 1 is swept
+    # (max_pages=1): the theme loads further pages via an AJAX "Load more"
+    # button, so page_style/page/2/ URLs don't exist anymore — and a broken
+    # sweep would burn ScrapFly credits (every page is a paid request). The
+    # newest page always carries every same-day posting, which is all the
+    # today-filtered daily run needs.
+    "page_size": 15,
+    # WordPress path pagination retained for page_style compatibility, but
+    # unused with max_pages=1.
     "page_1_based": True,
     "page_style": "path",
-    # Fetch through the free r.jina.ai relay: Cloudflare 403s direct requests
-    # from datacenter/runner IPs (GitHub Actions runners, cloud VMs) — same
-    # fix that keeps GeezJobs scraping. The relay adds latency, so the timeout
-    # is raised to 60s. Set JINA_API_KEY (settings/.env) for the free tier's
-    # higher request limits.
-    "relay": "jina",
-    "timeout": 60.0,
+    # Fetch through the ScrapFly anti-bot API (pagination.relay="scrapfly"):
+    # the site's Cloudflare now challenges every free access path (direct
+    # requests, the r.jina.ai relay, even headless browsers), so the source
+    # uses ScrapFly's asp bypass + render_js — see HtmlScraper._fetch_via_scrapfly.
+    # Needs SCRAPFLY_API_KEY (repo secret / settings.env). Note the free tier
+    # (1,000 credits/month) is roughly 12–20 requests here — asp + render_js
+    # costs ~45–80 credits per request — so this source alone eats the free
+    # tier in about a week at 2 runs/day; a paid plan is expected long-term.
+    # The timeout is raised because asp + render_js takes a while (ScrapFly's
+    # own read timeout is 155s).
+    "relay": "scrapfly",
+    "timeout": 160.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
-    # no items posted today (exact timestamps from the <time datetime> attrs).
+    # no items posted today (published_at is ESTIMATED from the cards' relative
+    # "Published X hours ago" text — the theme exposes no exact timestamp).
     "date_filter": {"field": "published_at"},
-    "max_pages": 100,
+    "max_pages": 1,
 }
 
 

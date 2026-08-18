@@ -175,6 +175,9 @@ DB_HOST=...
 DB_PORT=5432
 ETHIOJOBS_TOKEN=...    # same token as local .env (fresh one from ethiojobs.net/jobs Network tab if it expired)
 JINA_API_KEY=...       # optional; free key from jina.ai raises the relay request limit
+SCRAPFLY_API_KEY=...   # required for sites with pagination.relay="scrapfly" (e.g.
+                       # ReporterJobs — its Cloudflare challenges free relays);
+                       # free key from scrapfly.io (1,000 credits/month)
 ```
 
 Then re-run `bash setup_vm.sh` — it picks up where it left off.

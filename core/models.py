@@ -833,18 +833,19 @@ class ReporterJob(TimeStampedModel):
     """Ethiopian Reporter Jobs-specific job details (per-site model, isolated per website).
 
     Ethiopian Reporter Jobs (``www.ethiopianreporterjobs.com``) is a WordPress
-    job board (Noo Job Board theme) — there is no JSON API — so the per-site
-    row mirrors each ``article.noo_job`` card on ``/jobs-in-ethiopia/`` (title,
-    company, job type, location, posted + closing dates). ``external_id`` is
-    the stable WordPress post id (the last segment of the detail URL, e.g.
+    job board (Careerfy theme, mid-2026 redesign) — there is no JSON API — so
+    the per-site row mirrors each ``div.jobsearch-joblisting-classic-wrap``
+    card on ``/jobs-in-ethiopia/`` (title, company, job type, location,
+    posted time). ``external_id`` is the stable WordPress post id (the
+    ``data-job-id`` attribute / last segment of the detail URL, e.g.
     ``284574``).
 
-    Unlike GeezJobs, the cards DO expose an exact timestamp via the
-    ``<time datetime="...">`` attribute, so ``published_at`` is exact
-    (no estimation needed) and drives the today-only filter and per-day
-    numbering. The site posts in newspaper batches, so a strict today-only
-    run stores nothing on non-posting days. The job type chip is a single
-    phrase ("Full Time" / "Contract" / ...): the raw text is kept here
+    The cards only expose a RELATIVE posting time ("Published X hours ago"),
+    so ``published_at`` is estimated (like GeezJobs) and drives the
+    today-only filter and per-day numbering; the theme has the deadline field
+    disabled, so ``deadline`` is left unset and the shared +30-day default
+    applies (flagged ``deadline_is_default``). The job type badge is a single
+    phrase ("Full-time" / "Contract" / ...): the raw text is kept here
     (``job_type_text``) alongside the site-normalized value (``job_type``),
     while the master ``ScrapedItem.job_type`` carries the shared enum value.
     Linked from ``ScrapedItem.reporter_job``.

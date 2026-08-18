@@ -483,56 +483,86 @@ GEEZJOBS_SAMPLE_PATHS = [
     "url",
 ]
 
-# A faithful minimal listing page for Ethiopian Reporter Jobs (WordPress / Noo
-# Job Board theme). It mirrors the live /jobs-in-ethiopia/ markup: one
-# article.noo_job per listing with h3.loop-item-title, .job-company, .job-type,
-# .job-location and a <time class="entry-date" datetime="..."> carrying the
-# exact posted timestamp plus the posted/closing date spans. The listings
-# archive container (div.jobs.posts-loop) marks a real listings page. Two
-# cards: one posted today, one 3 days ago (the client-side today filter must
-# drop the old one and end the sweep on it).
+# A faithful minimal listing page for Ethiopian Reporter Jobs (WordPress /
+# Careerfy theme, mid-2026 redesign). It mirrors the live /jobs-in-ethiopia/
+# markup: one div.jobsearch-joblisting-classic-wrap per listing with
+# h2.jobsearch-pst-title (carrying data-job-id), the job-company-name li, the
+# maps-and-flags location li, the calendar "Published X hours ago" li and the
+# a.jobsearch-option-btn type badge. There are NO exact timestamps or
+# deadlines on the new cards (published_at is estimated from the relative
+# text; the deadline stays None so the shared +30-day default applies). Two
+# cards, both "hours ago".
 REPORTER_SAMPLE_HTML = """<!DOCTYPE html>
-<html lang="en-US"><head><meta charset="UTF-8"><title>Job Vacancy In Ethiopia - Ethiopian Reporter Jobs</title></head>
+<html lang="en-US"><head><meta charset="UTF-8"><title>Jobs In Ethiopia - Latest Vacancies &amp; Employment 2026</title></head>
 <body>
-  <div class="jobs posts-loop">
-    <div class="posts-loop-content noo-job-list-row">
-      <article class="nextajax-item noo_job style-1 post-284574 type-noo_job status-publish hentry" data-url="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/">
-        <h3 class="loop-item-title"><a href="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/">Property Administrator</a></h3>
-        <div class="loop-item-wrap list">
-          <span class="job-company"><a href="#"><span>LANCET GENERAL HOSPITAL</span></a></span>
-          <span class="job-type"><a href="/job-type/full-time/"><i class="fa fa-bookmark"></i><span>Full Time</span></a></span>
-          <span class="job-location" itemprop="jobLocation"><a href="/job-location/jobs-in-addis-ababa/"><em>Addis Ababa</em></a></span>
-          <span class="job-date"><time class="entry-date" datetime="2026-08-07T06:00:53+03:00"><span class="job-date__posted">August 7, 2026</span><span class="job-date__closing"> - August 14, 2026</span></time></span>
+<header id="careerfy-header"><nav><a href="/">Home</a></nav></header>
+  <div class="jobsearch-job" id="jobsearch-job-1">
+    <ul class="jobsearch-row">
+      <li class="jobsearch-column-12">
+        <div class="jobsearch-joblisting-classic-wrap">
+          <div class="jobsearch-joblisting-text">
+            <div class="jobsearch-list-option">
+              <h2 class="jobsearch-pst-title" data-job-id="284574">
+                <a href="https://www.ethiopianreporterjobs.com/jobs/284574/" title="Property Administrator">Property Administrator</a>
+              </h2>
+              <ul>
+                <li class="job-company-name"><a href="https://www.ethiopianreporterjobs.com/company/lancet/">@ LANCET GENERAL HOSPITAL</a></li>
+                <li><i class="jobsearch-icon jobsearch-maps-and-flags"></i>Addis Ababa, Ethiopia</li>
+              </ul>
+              <ul>
+                <li><i class="jobsearch-icon jobsearch-calendar"></i>Published  3 hours ago</li>
+                <li><i class="jobsearch-icon jobsearch-filter-tool-black-shape"></i><a href="/customer-service-support-jobs/">Customer Service and Support</a></li>
+              </ul>
+            </div>
+            <div class="jobsearch-job-userlist">
+              <a href="https://www.ethiopianreporterjobs.com/full-time-jobs/" class="jobsearch-option-btn"> Full-time </a>
+            </div>
+          </div>
         </div>
-      </article>
-      <article class="nextajax-item noo_job style-1 post-285000 type-noo_job status-publish hentry" data-url="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/285000/">
-        <h3 class="loop-item-title"><a href="https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/285000/">Office Engineer</a></h3>
-        <div class="loop-item-wrap list">
-          <span class="job-company"><a href="#"><span>4B Trading PLC</span></a></span>
-          <span class="job-type"><a href="/job-type/contract/"><i class="fa fa-bookmark"></i><span>Contract</span></a></span>
-          <span class="job-location" itemprop="jobLocation"><a href="/job-location/bahir-dar/"><em>Bahir Dar</em></a></span>
-          <span class="job-date"><time class="entry-date" datetime="2026-08-04T06:00:53+03:00"><span class="job-date__posted">August 4, 2026</span><span class="job-date__closing"> - August 12, 2026</span></time></span>
+      </li>
+      <li class="jobsearch-column-12">
+        <div class="jobsearch-joblisting-classic-wrap">
+          <div class="jobsearch-joblisting-text">
+            <div class="jobsearch-list-option">
+              <h2 class="jobsearch-pst-title" data-job-id="285000">
+                <a href="https://www.ethiopianreporterjobs.com/jobs/285000/" title="Office Engineer">Office Engineer</a>
+              </h2>
+              <ul>
+                <li class="job-company-name"><a href="https://www.ethiopianreporterjobs.com/company/4b/">@ 4B Trading PLC</a></li>
+                <li><i class="jobsearch-icon jobsearch-maps-and-flags"></i>Bahir Dar, Ethiopia</li>
+              </ul>
+              <ul>
+                <li><i class="jobsearch-icon jobsearch-calendar"></i>Published  5 hours ago</li>
+                <li><i class="jobsearch-icon jobsearch-filter-tool-black-shape"></i><a href="/contract-jobs/">Contract</a></li>
+              </ul>
+            </div>
+            <div class="jobsearch-job-userlist">
+              <a href="https://www.ethiopianreporterjobs.com/contract-jobs/" class="jobsearch-option-btn"> Contract </a>
+            </div>
+          </div>
         </div>
-      </article>
-    </div>
+      </li>
+    </ul>
   </div>
 </body></html>
 """
 
 # The raw card dict ReporterJobsScraper.parse() produces for the FIRST card
-# above. published_at comes from the exact <time datetime> attribute.
+# above. published_at is ESTIMATED from the relative "Published X hours ago"
+# text (pinned clock in the parse test); the theme exposes no exact timestamp
+# and no deadline, so deadline stays None (the shared +30-day default applies).
 REPORTER_SAMPLE = {
     "post_id": "284574",
     "title": "Property Administrator",
-    "url": "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/",
+    "url": "https://www.ethiopianreporterjobs.com/jobs/284574/",
     "company": "LANCET GENERAL HOSPITAL",
-    "job_type_text": "Full Time",
+    "job_type_text": "Full-time",
     "job_type": "full_time",
-    "location": "Addis Ababa",
-    "posted_text": "August 7, 2026",
+    "location": "Addis Ababa, Ethiopia",
+    "posted_text": "Published 3 hours ago",
     "published_at": "2026-08-07T06:00:53+03:00",
-    "deadline_text": "August 14, 2026",
-    "deadline": "2026-08-14T00:00:00+03:00",
+    "deadline_text": "",
+    "deadline": None,
 }
 
 REPORTER_SAMPLE_PATHS = [
@@ -1200,6 +1230,187 @@ class GeezJobsScraperTests(TestCase):
                 self.scraper.fetch(0)
         self.assertEqual(calls["n"], 5)  # 3 transport retries + 2 relay retries
 
+    @staticmethod
+    def _challenge_page() -> str:
+        # A faithful slice of what Cloudflare serves: the relay returns it
+        # with HTTP 200 (the relay itself got through), so only the body
+        # reveals that the target answered with its bot-check page.
+        return (
+            '<html lang="en-US"><head><title>Just a moment...</title>'
+            '<meta http-equiv="refresh" content="360">'
+            '<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=abc">'
+            "</script></head><body><div class=\"main-content\">Checking your browser...</div></body></html>"
+        )
+
+    def test_fetch_retries_cloudflare_challenge_then_succeeds(self):
+        # The target site can serve its Cloudflare challenge page to the relay
+        # (HTTP 200 — the relay itself got through). That must be retried like
+        # a transient blip — the block often lifts — never accepted as the page.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 200
+            response.raise_for_status = lambda: None
+            response.text = self._challenge_page() if calls["n"] == 1 else GEEZJOBS_SAMPLE_HTML
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 2)  # one challenge, one success
+
+    def test_fetch_raises_clear_error_when_always_challenged(self):
+        # When every attempt returns the challenge page the run must fail
+        # loudly with a message that NAMES Cloudflare (so the run summary / day
+        # log says what is actually wrong), never a silent empty success.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 200
+            response.raise_for_status = lambda: None
+            response.text = self._challenge_page()
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 5)  # 3 transport retries + 2 relay retries
+        self.assertIn("Cloudflare", str(ctx.exception))
+
+    @staticmethod
+    def _scrapfly_response(
+        content: str, status_code: int = 200, api_status: int = 200, success: bool = True
+    ):
+        """A mock ScrapFly API response (JSON envelope -> result.content)."""
+        response = mock.Mock()
+        response.status_code = api_status
+        response.raise_for_status = lambda: None
+        response.json.return_value = {
+            "result": {
+                "success": success,
+                "status_code": status_code,
+                "reason": "OK",
+                "content": content,
+            }
+        }
+        return response
+
+    def test_fetch_via_scrapfly_builds_request_and_parses(self):
+        # pagination.relay="scrapfly" routes the page through the ScrapFly
+        # anti-bot API: asp (bypass) + render_js (JS-rendered cards); the JSON
+        # envelope's result.content holds the rendered HTML and its
+        # result.status_code is the TARGET's status.
+        self.source.pagination = {**self.source.pagination, "relay": "scrapfly"}
+        self.scraper = GeezJobsScraper(self.source)
+        with override_settings(SCRAPFLY_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get"
+        ) as get:
+            get.return_value = self._scrapfly_response(GEEZJOBS_SAMPLE_HTML)
+            soup = self.scraper.fetch(0)
+        self.assertIsNotNone(soup.select_one(".opportunity-card"))
+        self.assertEqual(
+            get.call_args.args[0], "https://api.scrapfly.io/scrape"
+        )
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params["url"], "https://geezjobs.com/search-jobs")
+        self.assertEqual(params["key"], "test-key")
+        self.assertEqual(params["asp"], "true")
+        self.assertEqual(params["render_js"], "true")
+        self.assertNotIn("proxified_response", params)
+
+    def test_fetch_via_scrapfly_requires_key(self):
+        self.source.pagination = {**self.source.pagination, "relay": "scrapfly"}
+        self.scraper = GeezJobsScraper(self.source)
+        with override_settings(SCRAPFLY_API_KEY=""):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertIn("SCRAPFLY_API_KEY", str(ctx.exception))
+
+    def test_fetch_via_scrapfly_raises_when_challenge_unbypassed(self):
+        # Even ScrapFly's asp can lose to a strict challenge — the response
+        # must fail loudly with a message that names Cloudflare, never be
+        # parsed as an empty feed.
+        self.source.pagination = {
+            **self.source.pagination,
+            "relay": "scrapfly",
+            "retries": 1,
+            "relay_backoff_seconds": 0.0,
+        }
+        self.scraper = GeezJobsScraper(self.source)
+
+        def fake_get(*args, **kwargs):
+            return self._scrapfly_response(self._challenge_page())
+
+        with override_settings(SCRAPFLY_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get", side_effect=fake_get
+        ), mock.patch("core.scrapers.html.time.sleep"):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertIn("Cloudflare", str(ctx.exception))
+
+    def test_fetch_via_scrapfly_retries_transient_blips(self):
+        # A 429/5xx from ScrapFly itself (quota/concurrency blip) is retried
+        # with backoff like the relay blips are.
+        self.source.pagination = {
+            **self.source.pagination,
+            "relay": "scrapfly",
+            "retries": 2,
+            "relay_backoff_seconds": 0.0,
+        }
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                response = mock.Mock()
+                response.status_code = 429
+                return response
+            return self._scrapfly_response(GEEZJOBS_SAMPLE_HTML)
+
+        with override_settings(SCRAPFLY_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get", side_effect=fake_get
+        ), mock.patch("core.scrapers.html.time.sleep"):
+            self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 2)
+
+    def test_fetch_via_scrapfly_retries_failed_result(self):
+        # asp intermittently loses to the target's WAF (success=False,
+        # "Forbidden") even though the next attempt succeeds — that must be
+        # retried, not treated as a hard failure.
+        self.source.pagination = {
+            **self.source.pagination,
+            "relay": "scrapfly",
+            "retries": 2,
+            "relay_backoff_seconds": 0.0,
+        }
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return self._scrapfly_response("", success=False)
+            return self._scrapfly_response(GEEZJOBS_SAMPLE_HTML)
+
+        with override_settings(SCRAPFLY_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get", side_effect=fake_get
+        ), mock.patch("core.scrapers.html.time.sleep"):
+            soup = self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 2)
+        self.assertIsNotNone(soup.select_one(".opportunity-card"))
+
     def test_parse_extracts_cards_from_html(self):
         from bs4 import BeautifulSoup
 
@@ -1468,8 +1679,14 @@ class ReporterJobsScraperTests(TestCase):
     def test_parse_extracts_cards_from_html(self):
         from bs4 import BeautifulSoup
 
-        raw = BeautifulSoup(REPORTER_SAMPLE_HTML, "html.parser")
-        items = self.scraper.parse(raw)
+        # The cards only carry RELATIVE times ("Published X hours ago"), so
+        # pin the clock: 3h/5h ago from 09:00:53Z is 06:00:53Z / 04:00:53Z.
+        fixed = datetime(2026, 8, 7, 9, 0, 53, tzinfo=timezone.UTC)
+        with mock.patch(
+            "core.scrapers.reporterjobs.timezone.now", return_value=fixed
+        ):
+            raw = BeautifulSoup(REPORTER_SAMPLE_HTML, "html.parser")
+            items = self.scraper.parse(raw)
         self.assertEqual(len(items), 2)
 
         first = items[0]
@@ -1477,33 +1694,27 @@ class ReporterJobsScraperTests(TestCase):
         self.assertEqual(first["title"], "Property Administrator")
         self.assertEqual(
             first["url"],
-            "https://www.ethiopianreporterjobs.com/jobs-in-ethiopia/284574/",
+            "https://www.ethiopianreporterjobs.com/jobs/284574/",
         )
         self.assertEqual(first["company"], "LANCET GENERAL HOSPITAL")
-        self.assertEqual(first["job_type_text"], "Full Time")
+        self.assertEqual(first["job_type_text"], "Full-time")
         self.assertEqual(first["job_type"], "full_time")
-        self.assertEqual(first["location"], "Addis Ababa")
-        self.assertEqual(first["posted_text"], "August 7, 2026")
-        self.assertEqual(first["deadline_text"], "August 14, 2026")
-        # Exact timestamp from the <time datetime> attribute.
+        self.assertEqual(first["location"], "Addis Ababa, Ethiopia")
+        self.assertEqual(first["posted_text"], "Published 3 hours ago")
+        self.assertEqual(first["deadline_text"], "")
+        # Estimated from the relative text against the pinned clock.
         self.assertEqual(
-            first["published_at"], "2026-08-07T06:00:53+03:00"
+            first["published_at"], "2026-08-07T06:00:53+00:00"
         )
-        # Parsed deadline = local midnight; build the expected offset from the
-        # active timezone so the assertion survives a TIME_ZONE change.
-        self.assertEqual(
-            first["deadline"],
-            timezone.make_aware(datetime(2026, 8, 14)).isoformat(),
-        )
+        # No deadline on the new cards — the shared +30-day default applies.
+        self.assertIsNone(first["deadline"])
 
         second = items[1]
         self.assertEqual(second["title"], "Office Engineer")
         self.assertEqual(second["job_type"], "contract")
-        self.assertEqual(second["location"], "Bahir Dar")
-        self.assertEqual(
-            second["deadline"],
-            timezone.make_aware(datetime(2026, 8, 12)).isoformat(),
-        )
+        self.assertEqual(second["location"], "Bahir Dar, Ethiopia")
+        self.assertEqual(second["published_at"], "2026-08-07T04:00:53+00:00")
+        self.assertIsNone(second["deadline"])
 
     def test_shared_month_day_year_parser(self):
         from core.scrapers.html import parse_month_day_year
@@ -1526,11 +1737,13 @@ class ReporterJobsScraperTests(TestCase):
         self.assertEqual(item["external_id"], "284574")
         self.assertEqual(item["title"], "Property Administrator")
         self.assertEqual(item["company"], "LANCET GENERAL HOSPITAL")
-        self.assertEqual(item["location"], "Addis Ababa")
+        self.assertEqual(item["location"], "Addis Ababa, Ethiopia")
         # The site's normalized type value maps to the shared enum.
         self.assertEqual(item["job_type"], "FULL_TIME")
         self.assertIsNotNone(item["published_at"])
-        self.assertIsNotNone(item["deadline"])
+        # No deadline on the new cards — the +30-day default is applied by the
+        # shared save path (deadline_is_default), not the normalized dict.
+        self.assertIsNone(item["deadline"])
 
     def test_parse_raises_on_challenge_page(self):
         from bs4 import BeautifulSoup
@@ -1548,10 +1761,12 @@ class ReporterJobsScraperTests(TestCase):
     def test_parse_returns_empty_on_genuine_empty_page(self):
         from bs4 import BeautifulSoup
 
-        # Real listings page (archive container present) but zero cards: legit
-        # empty (e.g. WordPress redirected the deep page to /expired).
+        # Real listings page (the theme's header + an empty cards container)
+        # but zero cards: legit empty (e.g. WordPress redirected the deep page
+        # to /expired).
         empty = BeautifulSoup(
-            '<html><body><div class="jobs posts-loop"></div></body></html>',
+            '<html><body><header><nav><a href="/">Home</a></nav></header>'
+            '<div class="jobsearch-joblisting-classic-wrap"></div></body></html>',
             "html.parser",
         )
         self.assertEqual(self.scraper.parse(empty), [])
@@ -1590,13 +1805,16 @@ class ReporterJobsScraperTests(TestCase):
     def test_normalize_job_type_maps_known_and_drops_unknown(self):
         from core.scrapers.reporterjobs import _normalize_job_type
 
-        # Known chips map to the shared JobType values.
+        # Known badges map to the shared JobType values — both the old
+        # space-separated chips ("Full Time") and the Careerfy hyphenated
+        # badges ("Full-time").
         self.assertEqual(_normalize_job_type("Full Time"), "full_time")
+        self.assertEqual(_normalize_job_type("Full-time"), "full_time")
+        self.assertEqual(_normalize_job_type("Part-time"), "part_time")
         self.assertEqual(_normalize_job_type("Contract"), "contract")
-        self.assertEqual(_normalize_job_type("Part Time"), "part_time")
         self.assertEqual(_normalize_job_type("Internship"), "internship")
         # Parenthetical qualifiers are stripped before mapping.
-        self.assertEqual(_normalize_job_type("Full Time (Remote)"), "full_time")
+        self.assertEqual(_normalize_job_type("Full-time (Remote)"), "full_time")
         # Unknown phrases map to '' so the master enum never gets polluted
         # (the raw text is still kept on ReporterJob.job_type_text).
         self.assertEqual(_normalize_job_type("Unicorn Position"), "")
@@ -1642,14 +1860,16 @@ class ReporterJobsScraperTests(TestCase):
         self.scraper._save_detail(item, master_item)
         detail = ReporterJob.objects.get(external_id=item["external_id"])
         self.assertEqual(detail.company, "LANCET GENERAL HOSPITAL")
-        self.assertEqual(detail.location, "Addis Ababa")
-        self.assertEqual(detail.job_type_text, "Full Time")
+        self.assertEqual(detail.location, "Addis Ababa, Ethiopia")
+        self.assertEqual(detail.job_type_text, "Full-time")
         self.assertEqual(detail.job_type, "full_time")
-        self.assertEqual(detail.job_type_display, "Full Time")
-        self.assertEqual(detail.posted_text, "August 7, 2026")
-        self.assertEqual(detail.deadline_text, "August 14, 2026")
+        self.assertEqual(detail.job_type_display, "Full-time")
+        self.assertEqual(detail.posted_text, "Published 3 hours ago")
+        self.assertEqual(detail.deadline_text, "")
         self.assertIsNotNone(detail.published_at)
-        self.assertIsNotNone(detail.deadline)
+        # No deadline on the new cards — None stays None (the +30-day default
+        # is applied by the shared normalize/save path, not the detail row).
+        self.assertIsNone(detail.deadline)
         self.assertEqual(detail.job_number, 1)
         master_item.refresh_from_db()
         self.assertEqual(master_item.reporter_job_id, detail.pk)
@@ -2324,7 +2544,16 @@ class TelegramReportTests(TestCase):
         fake_post.assert_not_called()
 
     def test_per_run_mode_sends_report(self):
-        with self._post() as fake_post, self._env():
+        # Pin the clock BEFORE the digest hour: in per-run mode the command
+        # sends exactly one message (no test-suite follow-up). Without the
+        # pin, a suite run after 20:30 UTC makes this a digest run that
+        # spawns a REAL nested `manage.py test` — the recursive-subprocess
+        # blow-up that killed the Aug-17 evening run's report step.
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
             call_command("telegram_report", stdout=io.StringIO())
         fake_post.assert_called_once()
         payload = fake_post.call_args.kwargs["json"]
@@ -2349,14 +2578,22 @@ class TelegramReportTests(TestCase):
                 },
             ],
         )
-        with self._post() as fake_post, self._env():
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)  # before digest hour
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
         text = fake_post.call_args.kwargs["json"]["text"]
         self.assertIn("✅ successful runs: 12:02 (Addis)", text)
 
     def test_report_shows_dash_when_no_successful_runs(self):
         ScrapeLog.objects.create(day=self.TODAY)
-        with self._post() as fake_post, self._env():
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)  # before digest hour
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
         text = fake_post.call_args.kwargs["json"]["text"]
         self.assertIn("✅ successful runs: — (Addis)", text)
@@ -2407,19 +2644,21 @@ class TelegramReportTests(TestCase):
             return_value=fake_run,
         ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
-        fake_post.assert_called_once()
-        # The digest is the FULL day report (day status + per-website totals +
-        # issues) plus the test suite stats — not just the last run.
-        text = fake_post.call_args.kwargs["json"]["text"]
-        self.assertIn("Full Day Report", text)
-        self.assertIn("SUCCESS", text)
-        self.assertIn("found   :", text)
-        self.assertIn("🧪 Tests", text)
-        self.assertIn("85 passed", text)
+        # Two messages: the FULL day report first (day status + per-website
+        # totals + issues), then the test-suite stats as a short follow-up —
+        # so a slow test run can never hold up the report.
+        self.assertEqual(len(fake_post.call_args_list), 2)
+        report_text = fake_post.call_args_list[0].kwargs["json"]["text"]
+        self.assertIn("Full Day Report", report_text)
+        self.assertIn("SUCCESS", report_text)
+        self.assertIn("found   :", report_text)
         # The user-requested per-website layout: name on one line, stats under
         # it prefixed with =>.
-        self.assertIn("✅ Afriwork (Freelance Ethiopia)", text)
-        self.assertIn("=> api 2 · found 8 · inserted 7 · skipped 1", text)
+        self.assertIn("✅ Afriwork (Freelance Ethiopia)", report_text)
+        self.assertIn("=> api 2 · found 8 · inserted 7 · skipped 1", report_text)
+        tests_text = fake_post.call_args_list[1].kwargs["json"]["text"]
+        self.assertIn("🧪 Tests", tests_text)
+        self.assertIn("85 passed", tests_text)
 
     def test_run_tests_parses_stderr_summary(self):
         # Django's test runner writes the summary ("Ran N tests ... OK") to
@@ -2455,7 +2694,9 @@ class TelegramReportTests(TestCase):
             return_value=60,
         ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
-        text = fake_post.call_args.kwargs["json"]["text"]
+        # The nag rides on the FIRST message (the report itself); the second
+        # message is the test-suite follow-up.
+        text = fake_post.call_args_list[0].kwargs["json"]["text"]
         self.assertIn("Last commit 60 days ago", text)
 
     def test_digest_stays_quiet_for_recent_commit(self):
@@ -2473,7 +2714,7 @@ class TelegramReportTests(TestCase):
             return_value=3,
         ):
             call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
-        text = fake_post.call_args.kwargs["json"]["text"]
+        text = fake_post.call_args_list[0].kwargs["json"]["text"]
         self.assertNotIn("Last commit", text)
 
     def test_digest_skips_tests_with_flag(self):
@@ -2501,6 +2742,47 @@ class TelegramReportTests(TestCase):
         fake_run.assert_not_called()
         self.assertNotIn("🧪 Tests", fake_post.call_args.kwargs["json"]["text"])
 
+    def test_digest_sends_report_before_running_tests(self):
+        # The report is delivered BEFORE the test suite runs — a hung or
+        # failing suite (the Aug-17 runner-kill failure mode) can never take
+        # the report down with it.
+        ScrapeLog.objects.create(day=self.TODAY, status=ScrapeStatus.FAILED)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ), mock.patch.object(
+            TelegramReportCommand, "_run_tests", return_value="87 passed"
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        self.assertEqual(len(fake_post.call_args_list), 2)
+        self.assertIn(
+            "Full Day Report",
+            fake_post.call_args_list[0].kwargs["json"]["text"],
+        )
+        self.assertIn(
+            "🧪 Tests",
+            fake_post.call_args_list[1].kwargs["json"]["text"],
+        )
+
+    def test_digest_test_followup_failure_does_not_fail_step(self):
+        # The main report already went out — a failing test-suite follow-up
+        # must not turn the step red or lose the report.
+        ScrapeLog.objects.create(day=self.TODAY, status=ScrapeStatus.FAILED)
+        fixed = datetime(2026, 8, 15, 21, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ), mock.patch.object(
+            TelegramReportCommand, "_run_tests", side_effect=RuntimeError("boom")
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        self.assertEqual(len(fake_post.call_args_list), 1)
+        self.assertIn(
+            "Full Day Report",
+            fake_post.call_args_list[0].kwargs["json"]["text"],
+        )
+
     def test_force_sends_even_when_daily_mode_would_stay_quiet(self):
         ScrapeLog.objects.create(day=self.TODAY)
         fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
@@ -2515,10 +2797,13 @@ class TelegramReportTests(TestCase):
 
 
 class SeedSourcesCommandTests(TestCase):
-    def test_seed_sources_sets_reporterjobs_to_jina_relay(self):
+    def test_seed_sources_sets_reporterjobs_to_scrapfly_relay(self):
+        # ReporterJobs is behind a Cloudflare challenge that the free Jina
+        # relay can no longer beat — it must seed on the ScrapFly anti-bot
+        # backend (asp + render_js).
         call_command("seed_sources", stdout=io.StringIO())
         reporter = Source.objects.get(slug="reporterjobs")
-        self.assertEqual((reporter.pagination or {}).get("relay"), "jina")
+        self.assertEqual((reporter.pagination or {}).get("relay"), "scrapfly")
 
 
 class ArchiveWeekCommandTests(TestCase):

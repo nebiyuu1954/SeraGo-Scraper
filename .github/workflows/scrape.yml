@@ -19,6 +19,8 @@
 #   DB_ENGINE=django.db.backends.postgresql
 #   DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5432   (from Neon)
 #   DJANGO_SECRET_KEY, ETHIOJOBS_TOKEN, JINA_API_KEY (optional)
+#   SCRAPFLY_API_KEY (optional — anti-bot fetch backend for Cloudflare-blocked
+#     sites; get a free key at scrapfly.io, 1,000 credits/month)
 #   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  (optional — sends the report to
 #     your Telegram after every run; see DEPLOYMENT.md §5b)
 #
@@ -58,6 +60,7 @@ jobs:
       DJANGO_DEBUG: "false"
       ETHIOJOBS_TOKEN: ${{ secrets.ETHIOJOBS_TOKEN }}
       JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+      SCRAPFLY_API_KEY: ${{ secrets.SCRAPFLY_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       NOTIFY_MODE: ${{ vars.NOTIFY_MODE || 'per-run' }}
@@ -86,4 +89,9 @@ jobs:
         # Runs even when scrape_all fails (if: always()) so failures get
         # reported — that's the whole point of the notification.
         if: always()
+        # Unbuffered output: on a pipe the command's stdout is block-buffered,
+        # so a stalled step shows nothing in the log. PYTHONUNBUFFERED keeps
+        # progress visible live.
+        env:
+          PYTHONUNBUFFERED: "1"
         run: python manage.py telegram_report
