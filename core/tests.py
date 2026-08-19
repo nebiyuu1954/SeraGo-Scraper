@@ -1230,6 +1230,53 @@ class GeezJobsScraperTests(TestCase):
                 self.scraper.fetch(0)
         self.assertEqual(calls["n"], 5)  # 3 transport retries + 2 relay retries
 
+    def test_fetch_retries_402_blip_then_succeeds(self):
+        # A 402 (Payment Required) blip from the Jina relay — the free-tier
+        # quota is momentarily exhausted — is retried like 403/429/5xx.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 402 if calls["n"] == 1 else 200
+            response.raise_for_status = lambda: None
+            response.text = GEEZJOBS_SAMPLE_HTML
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            self.scraper.fetch(0)
+        self.assertEqual(calls["n"], 2)  # one 402 blip, one success
+
+    def test_fetch_fails_with_clear_message_when_relay_always_402(self):
+        # Persistent 402 from the Jina relay (quota exhausted) must fail with
+        # a clear ScrapeError mentioning quota/JINA_API_KEY, not a raw
+        # HTTPStatusError.
+        self.source.pagination = {**self.source.pagination, "relay": "jina"}
+        self.scraper = GeezJobsScraper(self.source)
+        calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            calls["n"] += 1
+            response = mock.Mock()
+            response.status_code = 402
+            response.raise_for_status = lambda: None
+            response.text = "<html></html>"
+            return response
+
+        with mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertIn("402", str(ctx.exception))
+        self.assertIn("quota", str(ctx.exception).lower())
+        self.assertEqual(calls["n"], 5)  # 3 transport + 2 relay retries
+
+
     @staticmethod
     def _challenge_page() -> str:
         # A faithful slice of what Cloudflare serves: the relay returns it
@@ -1319,14 +1366,14 @@ class GeezJobsScraperTests(TestCase):
             get.return_value = self._scrapfly_response(GEEZJOBS_SAMPLE_HTML)
             soup = self.scraper.fetch(0)
         self.assertIsNotNone(soup.select_one(".opportunity-card"))
-        self.assertEqual(
-            get.call_args.args[0], "https://api.scrapfly.io/scrape"
-        )
-        params = get.call_args.kwargs["params"]
-        self.assertEqual(params["url"], "https://geezjobs.com/search-jobs")
-        self.assertEqual(params["key"], "test-key")
-        self.assertEqual(params["asp"], "true")
-        self.assertEqual(params["render_js"], "true")
+        # Registry-based dispatch uses keyword args: httpx.get(url=..., params=...)
+        url_arg = get.call_args.kwargs.get("url") if get.call_args.kwargs else None
+        self.assertEqual(url_arg, "https://api.scrapfly.io/scrape")
+        params = get.call_args.kwargs.get("params") or {}
+        self.assertEqual(params.get("url"), "https://geezjobs.com/search-jobs")
+        self.assertEqual(params.get("key"), "test-key")
+        self.assertEqual(params.get("asp"), "true")
+        self.assertEqual(params.get("render_js"), "true")
         self.assertNotIn("proxified_response", params)
 
     def test_fetch_via_scrapfly_requires_key(self):
@@ -1335,7 +1382,9 @@ class GeezJobsScraperTests(TestCase):
         with override_settings(SCRAPFLY_API_KEY=""):
             with self.assertRaises(ScrapeError) as ctx:
                 self.scraper.fetch(0)
-        self.assertIn("SCRAPFLY_API_KEY", str(ctx.exception))
+        # The error message names the service and mentions the API key
+        self.assertIn("ScrapFly", str(ctx.exception))
+        self.assertIn("api key", str(ctx.exception).lower())
 
     def test_fetch_via_scrapfly_raises_when_challenge_unbypassed(self):
         # Even ScrapFly's asp can lose to a strict challenge — the response
@@ -1376,6 +1425,7 @@ class GeezJobsScraperTests(TestCase):
             if calls["n"] == 1:
                 response = mock.Mock()
                 response.status_code = 429
+                response.text = ""
                 return response
             return self._scrapfly_response(GEEZJOBS_SAMPLE_HTML)
 

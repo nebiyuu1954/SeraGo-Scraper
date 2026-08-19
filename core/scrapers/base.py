@@ -93,8 +93,10 @@ def request_with_retry(
     raise last_error  # type: ignore[misc]  # retries >= 1 guarantees a value
 
 
-class ScrapeError(Exception):
-    """Raised when a source returns unexpected data."""
+# ScrapeError lives in core.challenge to avoid circular imports between
+# core.scrapers.base, core.scrapers.html, and core.cloudflare_backends.
+# Re-exported here for backward compatibility.
+from core.challenge import ScrapeError  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

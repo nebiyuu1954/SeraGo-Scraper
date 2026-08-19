@@ -127,27 +127,20 @@ class ScraperCreditUsage(TimeStampedModel):
     (the ``month`` field is YYYY-MM).
     """
 
-    SERVICE_CHOICES = [
-        ("zenrows", "ZenRows"),
-        ("scrapedo", "Scrape.do"),
-        ("scrapebadger", "ScrapeBadger"),
-        ("scrapfly", "ScrapFly"),
-        ("scraperapi", "ScraperAPI"),
-    ]
-    SERVICE_CREDITS_PER_REQUEST = {
-        "zenrows": 25,
-        "scrapedo": 1,
-        "scrapebadger": 2,
-        "scrapfly": 50,
-        "scraperapi": 25,
-    }
-    SERVICE_MONTHLY_FREE_CREDITS = {
-        "zenrows": 5000,
-        "scrapedo": 1000,
-        "scrapebadger": 1000,
-        "scrapfly": 1000,
-        "scraperapi": 1000,
-    }
+    # Built from the cloudflare_backends registry at class-definition time.
+    # To add a new backend, subclass CloudflareBackend in
+    # core/cloudflare_backends.py — these dicts update automatically.
+    from core.cloudflare_backends import all_backends as _all_cf_backends
+
+    SERVICE_CHOICES = []  # populated below
+    SERVICE_CREDITS_PER_REQUEST: dict[str, int] = {}
+    SERVICE_MONTHLY_FREE_CREDITS: dict[str, int] = {}
+
+    for _name, _cls in _all_cf_backends().items():
+        SERVICE_CHOICES.append((_name, _cls.__name__.replace("Backend", "")))
+        SERVICE_CREDITS_PER_REQUEST[_name] = _cls.credits_per_request
+        SERVICE_MONTHLY_FREE_CREDITS[_name] = _cls.monthly_free_credits
+    del _name, _cls, _all_cf_backends
 
     service = models.CharField(max_length=20, choices=SERVICE_CHOICES)
     credits_used = models.PositiveIntegerField(default=0)
