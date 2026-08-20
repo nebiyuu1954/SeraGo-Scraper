@@ -31,16 +31,31 @@ Cloudflare-fronted pages too — it is NOT a challenge marker.
 
 ## 2. The rotation backends
 
-We maintain 5 anti-bot scraping APIs, each with a free tier. The scraper
-rotates across them cheapest-first, so the budget is maximized.
+We maintain 6 backends (1 reader relay + 5 anti-bot APIs), each with a
+free tier. The scraper rotates across them cheapest-first.
 
-| # | Service | API URL | Auth | Request format | Response format | Free credits/mo | Credits/req | Protected reqs/mo |
-|---|---------|---------|------|----------------|-----------------|-----------------|-------------|-------------------|
-| 1 | **ZenRows** | `https://api.zenrows.com/v1/` | `apikey` param | GET `?apikey=KEY&url=URL&js_render=true&premium_proxy=true` | HTML body (200 = success) | 5,000 | 25 | **200** |
-| 2 | **Scrape.do** | `https://api.scrape.do/` | `token` param | GET `?token=KEY&url=URL&render=true` | HTML body (200 = success) | 1,000 | 1 | **1,000** |
-| 3 | **ScrapeBadger** | `https://scrapebadger.com/v1/web/scrape` | `x-api-key` header | POST JSON `{"url": "URL", "format": "html"}` | JSON `{"content": "HTML"}` | 1,000 | 1-3 | **333-1,000** |
-| 4 | **ScrapFly** | `https://api.scrapfly.io/scrape` | `key` param | GET `?url=URL&key=KEY&asp=true&render_js=true` | JSON `{"result": {"content": "HTML", "status_code": N, "success": bool}}` | 1,000 | 30-80 | **12-33** |
-| 5 | **ScraperAPI** | `https://api.scraperapi.com` | `api_key` param | GET `?api_key=KEY&render=true&url=URL` | HTML body (200 = success) | 1,000 | 5-75 | **13-200** |
+| # | Service | Type | API URL | Auth | Request format | Response format | Free tier/mo | Credits/req |
+|---|---------|------|---------|------|----------------|-----------------|-------------|-------------|
+| 1 | **Jina Reader** | Relay | `https://r.jina.ai/<url>` | Bearer header | GET path-based (`r.jina.ai/ENCODED_URL`) | HTML body | **6,000** (200/day) | 1 |
+| 2 | **Scrape.do** | API | `https://api.scrape.do/` | `token` param | GET `?token=KEY&url=URL&render=true` | HTML body | 1,000 | 1 |
+| 3 | **ScrapeBadger** | API | `https://scrapebadger.com/v1/web/scrape` | `x-api-key` header | POST JSON `{"url": "URL", "format": "html"}` | JSON `{"content": "HTML"}` | 1,000 | 1-3 |
+| 4 | **ZenRows** | API | `https://api.zenrows.com/v1/` | `apikey` param | GET `?apikey=KEY&url=URL&js_render=true&premium_proxy=true` | HTML body | 5,000 | 25 |
+| 5 | **ScraperAPI** | API | `https://api.scraperapi.com` | `api_key` param | GET `?api_key=KEY&render=true&url=URL` | HTML body | 1,000 | 5-75 |
+| 6 | **ScrapFly** | API | `https://api.scrapfly.io/scrape` | `key` param | GET `?url=URL&key=KEY&asp=true&render_js=true` | JSON `{"result": {"content": "HTML"}}` | 1,000 | 30-80 |
+
+### Key differences
+
+- **Jina Reader**: Free relay that fetches any URL and returns raw HTML.
+  Uses path-based URL encoding (`r.jina.ai/<encoded-target-url>`). Cheapest
+  option — bypasses WAFs by fetching from Jina's own infra. Best for
+  sources like GeezJobs where the site blocks our IP but not Jina's.
+- **Scrape.do**: 1 credit per request regardless of features. Best value
+  among API backends. `render=true` for JS.
+- **ScrapeBadger**: POST endpoint (unique). Returns JSON envelope.
+- **ZenRows**: Premium proxies + JS rendering = 25 credits/request.
+  Best free tier among API backends (5,000 credits).
+- **ScraperAPI**: Simplest API. Credit cost varies (5-75).
+- **ScrapFly**: Most expensive. `asp=true` for anti-bot.
 
 ### Key differences
 
@@ -71,18 +86,30 @@ For each Cloudflare request:
   5. Log which service was used for auditing
 ```
 
-### Fallback chain (current order)
+### Rotation modes
 
+There are **two rotation modes**, depending on the source's needs:
+
+**`relay_rotate`** — for reader-relay sources (e.g. GeezJobs):
+```
+Jina → Scrape.do → ScrapeBadger → ZenRows → ScraperAPI → ScrapFly
+```
+Tries Jina first (cheapest, free). If Jina fails (402 quota, 403, 5xx),
+falls back to CF backends in cheapest-first order.
+
+**`cloudflare_rotate`** — for CF-protected sites (e.g. ReporterJobs):
 ```
 Scrape.do → ScrapeBadger → ZenRows → ScraperAPI → ScrapFly
 ```
+Same as above but without Jina (CF backends only).
 
-**Why this order:**
-1. Scrape.do: 1 credit/req, best value, 1,000 free = 1,000 requests
-2. ScrapeBadger: 1-3 credits/req, good bypass types, 1,000 free
-3. ZenRows: 25 credits/req but 5,000 free = 200 requests
-4. ScraperAPI: 5-75 credits/req, 1,000 free
-5. ScrapFly: 30-80 credits/req, already integrated, most expensive
+**Why Jina first in relay_rotate:**
+1. Jina: 1 credit/req, 6,000 free/mo — cheapest by far
+2. Scrape.do: 1 credit/req, 1,000 free — best CF backend
+3. ScrapeBadger: 1-3 credits/req, 1,000 free
+4. ZenRows: 25 credits/req, 5,000 free = 200 requests
+5. ScraperAPI: 5-75 credits/req, 1,000 free
+6. ScrapFly: 30-80 credits/req — most expensive
 
 ### Credit tracking
 
@@ -99,16 +126,17 @@ hits 0, it's skipped for the rest of the month.
 
 ## 4. Budget math
 
-### Combined free budget (all 5 services)
+### Combined free budget (all 6 backends)
 
 | Service | Credits/mo | Credits/req | Requests/mo |
 |---------|-----------|-------------|-------------|
+| Jina Reader | 6,000 | 1 | **6,000** |
 | Scrape.do | 1,000 | 1 | 1,000 |
 | ScrapeBadger | 1,000 | 1-3 | 333-1,000 |
 | ZenRows | 5,000 | 25 | 200 |
 | ScraperAPI | 1,000 | 5-75 | 13-200 |
 | ScrapFly | 1,000 | 30-80 | 12-33 |
-| **TOTAL** | | | **~1,558-2,433** |
+| **TOTAL** | | | **~7,558-8,433** |
 
 ### Per-site projections (current: 2 runs/day)
 
@@ -138,11 +166,12 @@ Every-30-min needs 1-2 paid services ($19-29/mo) for 5+ Cloudflare sites.
 
 ---
 
-## 5. Current Cloudflare-protected sites
+## 5. Current protected sites
 
-| Site | Slug | Cloudflare level | Last verified | Backend used |
-|------|------|-----------------|---------------|--------------|
-| Ethiopian Reporter Jobs | `reporterjobs` | Strict (Turnstile/Under Attack) | 2026-08-18 | Rotating (all 5) |
+| Site | Slug | Protection | Relay mode | Last verified | Backend used |
+|------|------|-----------|------------|---------------|--------------|
+| GeezJobs | `geezjobs` | Hostinger WAF (403) | `relay_rotate` | 2026-08-18 | Jina primary, CF fallback |
+| Ethiopian Reporter Jobs | `reporterjobs` | Cloudflare (Turnstile) | `cloudflare_rotate` | 2026-08-18 | Rotating (all 5 CF backends) |
 
 ### ReporterJobs specifics
 
@@ -155,20 +184,35 @@ Every-30-min needs 1-2 paid services ($19-29/mo) for 5+ Cloudflare sites.
 
 ---
 
-## 6. Adding a new Cloudflare site
+## 6. Adding a new site
 
-When a new source triggers "Blocked by Cloudflare challenge":
+### Adding a WAF-blocked site (like GeezJobs)
 
-1. **Verify it's Cloudflare**: the error says "Blocked by Cloudflare challenge"
-2. **Check CLOUDFLARE.md**: is this site already documented?
-3. **The scraper auto-rotates**: no code change needed — the rotation picks
-   the best available backend
-4. **Update this file**: add the site to the table in §5 with:
-   - Cloudflare level (basic / strict / Under Attack)
-   - Which backend worked (if you tested manually)
-   - Any site-specific quirks (theme, card selectors, pagination)
-5. **If ALL backends fail**: the site is in hard Under Attack mode — wait
-   or use a paid proxy service (Bright Data, Oxylabs)
+If the site blocks our IP but not external relays:
+
+1. Set `pagination.relay = "relay_rotate"` in `seed_sources.py`
+2. Set Jina as the primary relay — it's cheapest and most sites don't
+   block Jina's infrastructure
+3. The CF backends act as automatic fallback if Jina fails
+
+### Adding a Cloudflare-protected site (like ReporterJobs)
+
+1. Set `pagination.relay = "cloudflare_rotate"` in `seed_sources.py`
+2. The scraper auto-rotates across all configured backends
+3. No code change needed — the rotation picks the best available backend
+
+### Adding a new backend
+
+To add a new anti-bot service to the rotation:
+
+1. Subclass `CloudflareBackend` in `core/cloudflare_backends.py`
+2. Set class attributes (name, api_url, env_key, etc.)
+3. Implement `build_request_kwargs` and `parse_response`
+4. Add to `DEFAULT_ROTATION_ORDER` or `RELAY_ROTATION_ORDER`
+5. Add the env var to `.env.example`
+
+That's it — the rotation, credit tracking, and admin dashboard all
+pick it up automatically.
 
 ---
 
@@ -221,19 +265,22 @@ LIMIT 50;
 
 ## 9. Environment variables
 
-All 5 API keys are optional — the scraper uses whichever are configured:
+All keys are optional — the scraper uses whichever are configured.
+The rotation skips backends whose key is missing.
 
 ```
-ZENROWS_API_KEY=...       # zenrows.com dashboard → API Keys
-SCRAPE_DO_API_KEY=...     # scrape.do dashboard → API Token
-SCRAPEBADGER_API_KEY=...  # scrapebadger.com dashboard → API Key
-SCRAPFLY_API_KEY=...      # scrapfly.io dashboard → API Keys (already set)
-SCRAPERAPI_KEY=...        # scraperapi.com dashboard → API Key
+# Primary relay (for relay_rotate sources like GeezJobs)
+JINA_API_KEY=...          # jina.ai → free key raises relay limit to 200/day
+
+# Anti-bot backends (for cloudflare_rotate and relay_rotate fallback)
+SCRAPE_DO_API_KEY=...     # scrape.do → Dashboard → API Token (1 credit/req)
+SCRAPEBADGER_API_KEY=...  # scrapebadger.com → Dashboard → API Key (1-3 credits/req)
+ZENROWS_API_KEY=...       # zenrows.com → Dashboard → API Keys (25 credits/req)
+SCRAPERAPI_KEY=...        # scraperapi.com → Dashboard → API Key (5-75 credits/req)
+SCRAPFLY_API_KEY=...      # scrapfly.io → Dashboard → API Keys (30-80 credits/req)
 ```
 
 Keys are stored as GitHub Actions secrets AND in `.env` for local dev.
-The rotation skips services whose key is missing — no error, just fewer
-fallback options.
 
 ---
 
