@@ -58,8 +58,14 @@ class CloudflareBackend(ABC):
 
     @classmethod
     def get_api_key(cls) -> str:
-        """Read the API key from Django settings (env var)."""
-        return getattr(settings, cls.env_key, "") or ""
+        """Read the API key from Django settings (env var).
+
+        Strips leading/trailing whitespace and newlines — a common mistake
+        when copying keys from dashboards or .env files where a trailing
+        newline causes ``Illegal header value`` crashes in httpx.
+        """
+        raw = getattr(settings, cls.env_key, "") or ""
+        return raw.strip()
 
     @classmethod
     @abstractmethod

@@ -181,7 +181,12 @@ def _classify_relay_error(exc: Exception) -> str:
             msg = msg[:117] + "..."
         return msg
     if isinstance(exc, httpx.TransportError):
-        return f"Transport error: {type(exc).__name__}"
+        # httpx.LocalProtocolError (bad headers) is a TransportError subclass
+        name = type(exc).__name__
+        msg = str(exc)
+        if "Illegal header" in msg:
+            return f"{name}: API key has invalid characters (check for trailing newlines/spaces)"
+        return f"Transport error: {name}: {msg[:120]}"
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -431,7 +436,7 @@ class HtmlScraper(BaseScraper):
                 )
                 logger.info("Cloudflare rotate: %s succeeded for %s", service, source_slug)
                 return soup
-            except ScrapeError as exc:
+            except (ScrapeError, httpx.HTTPStatusError, httpx.TransportError) as exc:
                 last_error = exc
                 _relay_failures.append((service, exc))
                 logger.warning("Cloudflare rotate: %s failed for %s: %s", service, source_slug, exc)
@@ -501,7 +506,7 @@ class HtmlScraper(BaseScraper):
                     )
                 logger.info("Relay rotate: %s succeeded for %s", service, source_slug)
                 return soup
-            except (ScrapeError, httpx.HTTPStatusError) as exc:
+            except (ScrapeError, httpx.HTTPStatusError, httpx.TransportError) as exc:
                 last_error = exc
                 _relay_failures.append((service, exc))
                 logger.warning("Relay rotate: %s failed for %s: %s", service, source_slug, exc)
@@ -577,6 +582,7 @@ class HtmlScraper(BaseScraper):
             except (
                 httpx.TransportError,
                 httpx.HTTPStatusError,
+                httpx.LocalProtocolError,
                 CloudflareChallengeError,
                 _CoreChallengeError,
                 ScrapeError,
