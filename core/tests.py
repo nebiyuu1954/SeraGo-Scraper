@@ -1662,6 +1662,73 @@ class GeezJobsScraperTests(TestCase):
         self.assertEqual(site_log.run_count, 1)
         self.assertEqual(site_log.items_inserted, 1)
 
+    def test_chip_text_works_with_playwright_svg_icons(self):
+        """_chip_text must find both raw <i data-lucide> and Playwright SVGs.
+
+        When Playwright renders the page with JS, Lucide replaces
+        ``<i data-lucide="calendar-plus">`` with
+        ``<svg class="lucide lucide-calendar-plus">``.
+        """
+        from bs4 import BeautifulSoup
+
+        # Raw HTML (direct HTTP / Jina relay)
+        raw = BeautifulSoup(
+            '<div class="opportunity-card">'
+            '<div><i data-lucide="calendar-plus"></i>'
+            '<span>Posted: 3 hours ago</span></div></div>',
+            "html.parser",
+        )
+        card = raw.select_one(".opportunity-card")
+        self.assertEqual(GeezJobsScraper._chip_text(card, "calendar-plus"), "Posted: 3 hours ago")
+
+        # Playwright JS-rendered HTML (icons become SVGs)
+        pw = BeautifulSoup(
+            '<div class="opportunity-card">'
+            '<div><svg class="lucide lucide-calendar-plus"><path d="M0"/></svg>'
+            '<span>Posted: 7 hours ago</span></div></div>',
+            "html.parser",
+        )
+        card2 = pw.select_one(".opportunity-card")
+        self.assertEqual(GeezJobsScraper._chip_text(card2, "calendar-plus"), "Posted: 7 hours ago")
+
+        # Missing icon returns empty (neither raw nor SVG)
+        empty = BeautifulSoup(
+            '<div class="opportunity-card"><div><span>no icon</span></div></div>',
+            "html.parser",
+        )
+        card3 = empty.select_one(".opportunity-card")
+        self.assertEqual(GeezJobsScraper._chip_text(card3, "calendar-plus"), "")
+
+    def test_parse_extracts_published_at_from_svg_icons(self):
+        """parse() must extract published_at even when Playwright renders SVG icons."""
+        from bs4 import BeautifulSoup
+
+        pw_html = (
+            '<div class="opportunity-card">'
+            '<h3><a href="/job-detail/test-job">Test Job</a></h3>'
+            '<div><svg class="lucide lucide-building-2"></svg>'
+            '<a href="/company/test-co">Test Co</a></div>'
+            '<div><svg class="lucide lucide-map-pin"></svg>'
+            '<span>Addis Ababa - Ethiopia</span></div>'
+            '<div><svg class="lucide lucide-calendar-x"></svg>'
+            '<span>Deadline: September 7, 2026</span></div>'
+            '<div><svg class="lucide lucide-briefcase"></svg>'
+            '<span>Full-time / Permanent</span></div>'
+            '<div><svg class="lucide lucide-award"></svg>'
+            '<span>3+ Years</span></div>'
+            '<div><svg class="lucide lucide-calendar-plus"></svg>'
+            '<span>Posted: 2 hours ago</span></div>'
+            '</div>'
+        )
+        soup = BeautifulSoup(pw_html, "html.parser")
+        items = self.scraper.parse(soup)
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["title"], "Test Job")
+        self.assertIsNotNone(item["published_at"], "published_at should be set from SVG-parsed 'Posted: 2 hours ago'")
+        self.assertIn("posted_text", item)
+        self.assertIn("2 hours ago", item["posted_text"])
+
     def test_factory_dispatches_geezjobs_by_slug(self):
         from core.scrapers import ScraperFactory
 

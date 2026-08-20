@@ -142,8 +142,16 @@ class GeezJobsScraper(HtmlScraper):
         Every info row on a card is ``<div><i data-lucide="..."></i><span>text
         </span></div>`` (company uses an ``<a>`` instead of the span), so the
         sibling of the icon's parent row holds the value.
+
+        When Playwright renders the page with JavaScript, Lucide replaces
+        ``<i data-lucide="calendar-plus">`` with
+        ``<svg class="lucide lucide-calendar-plus">…</svg>`` — so we also
+        check for ``svg.lucide-{icon}`` to cover both raw and JS-rendered HTML.
         """
         node = card.select_one(f'i[data-lucide="{icon}"]')
+        if node is None:
+            # Playwright JS rendering replaces <i> with <svg class="lucide …">
+            node = card.select_one(f'svg.lucide-{icon}')
         if node is None:
             return ""
         row = node.parent
