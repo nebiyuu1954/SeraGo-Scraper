@@ -278,14 +278,13 @@ GEEZJOBS_PAGINATION = {
     # ?page=N from page 2 onward (page 1 is the bare /search-jobs URL).
     "page_1_based": True,
     "page_key": "page",
-    # Fetch through the free r.jina.ai relay: HtmlScraper embeds the page URL
-    # in https://r.jina.ai/<url> and asks for raw HTML (X-Return-Format: html,
-    # X-No-Cache: true). GeezJobs' Hostinger WAF blocks our network (403 on
-    # every path) but does not block Jina's infrastructure, so this source
-    # keeps scraping while the block is in place. The relay adds latency, so
-    # the timeout is raised to 60s. Set JINA_API_KEY (settings/.env) for the
-    # free tier's higher request limits.
-    "relay": "jina",
+    # Reader-relay rotation: tries Jina first (cheapest, free), then falls
+    # back to Cloudflare bypass backends (Scrape.do, ZenRows, etc.) if Jina
+    # fails.  GeezJobs' Hostinger WAF blocks our network (403 on every path)
+    # so we must relay through an external service.  Set JINA_API_KEY for the
+    # primary relay's higher free-tier limits; set at least one CF backend key
+    # (SCRAPE_DO_API_KEY, etc.) for fault tolerance.  See CLOUDFLARE.md.
+    "relay": "relay_rotate",
     "timeout": 60.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
