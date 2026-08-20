@@ -106,15 +106,6 @@ jobs:
       - name: Scrape all sources
         run: python manage.py scrape_all
 
-      - name: Backfill GeezJobs published_at
-        # One-time fix: items scraped via Playwright before the SVG-icon fix
-        # (c2b9927) have published_at=None. The fixed parser now extracts
-        # dates correctly; this re-scrapes all pages to update them.
-        # Safe to run多次 — skips when nothing needs backfilling.
-        env:
-          PYTHONUNBUFFERED: "1"
-        run: python manage.py backfill_geezjobs_dates
-
       - name: Send Telegram report
         # Runs even when scrape_all fails (if: always()) so failures get
         # reported — that's the whole point of the notification.
