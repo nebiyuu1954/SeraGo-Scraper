@@ -161,9 +161,19 @@ class ReporterJobsScraper(HtmlScraper):
                     "the relay returns the rendered feed"
                 )
             if not raw.select(self._SITE_FRAMING_SELECTOR):
+                # Collect diagnostic info for the daily report
+                title = raw.title.get_text(strip=True) if raw.title else "(no title)"
+                html_str = str(raw)
+                size_kb = len(html_str) / 1024
+                snippet = html_str[:200].replace("\n", " ")
                 raise ScrapeError(
-                    "No job cards, listings archive, or site framing found on "
-                    "the page (possible Cloudflare challenge / bot detection)"
+                    f"No job cards (selector: {self._CARD_SELECTOR}) and no site "
+                    f"framing (header/nav) found on the page. "
+                    f"Page title: '{title}', size: {size_kb:.1f}KB. "
+                    f"First 200 chars: '{snippet}' "
+                    f"Possible causes: Cloudflare challenge leaked through, "
+                    f"page layout changed, or JS did not render. "
+                    f"Verify the page opens in a real browser."
                 )
 
         items: list[dict] = []

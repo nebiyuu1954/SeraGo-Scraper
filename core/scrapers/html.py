@@ -157,6 +157,34 @@ def parse_month_day_year(text: str) -> datetime | None:
         return None
 
 
+def _classify_relay_error(exc: Exception) -> str:
+    """Human-readable one-liner for a relay/backend failure.
+
+    Used in the final error message of relay_rotate and cloudflare_rotate
+    to show exactly what went wrong with each backend.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code == 402:
+            return "402 Payment Required (quota exhausted)"
+        if code == 403:
+            return "403 Forbidden (access denied / WAF block)"
+        if code == 429:
+            return "429 Too Many Requests (rate limited)"
+        if code >= 500:
+            return f"{code} Server Error (backend may be down)"
+        return f"HTTP {code}"
+    if isinstance(exc, ScrapeError):
+        msg = str(exc)
+        # Truncate long messages but keep the key info
+        if len(msg) > 120:
+            msg = msg[:117] + "..."
+        return msg
+    if isinstance(exc, httpx.TransportError):
+        return f"Transport error: {type(exc).__name__}"
+    return f"{type(exc).__name__}: {exc}"
+
+
 class HtmlScraper(BaseScraper):
     """GET/HTML scraper for server-side rendered listing pages."""
 
@@ -328,8 +356,10 @@ class HtmlScraper(BaseScraper):
                 raise ScrapeError(
                     "Relay returned HTTP 402 Payment Required on all "
                     f"{attempts} attempt(s) — the API quota is exhausted. "
-                    "Set JINA_API_KEY for a higher free-tier limit, or "
-                    "wait for the quota to reset."
+                    "Fix: (1) set JINA_API_KEY for a higher free-tier limit "
+                    "(200 req/day vs 20), or (2) switch to relay_rotate which "
+                    "falls back to Scrape.do / ScrapFly when Jina is down, "
+                    "or (3) wait for the daily quota reset."
                 )
             raise last_error
         # Record the request even when it fails — it still hit the site (or relay).
@@ -375,6 +405,7 @@ class HtmlScraper(BaseScraper):
         month = timezone.localdate().strftime("%Y-%m")
         source_slug = self.source.slug
         tried: list[str] = []
+        _relay_failures: list[tuple[str, Exception]] = []
         last_error: Exception | None = None
 
         for service in CLOUDFLARE_ROTATION_ORDER:
@@ -402,6 +433,7 @@ class HtmlScraper(BaseScraper):
                 return soup
             except ScrapeError as exc:
                 last_error = exc
+                _relay_failures.append((service, exc))
                 logger.warning("Cloudflare rotate: %s failed for %s: %s", service, source_slug, exc)
                 continue
 
@@ -414,10 +446,15 @@ class HtmlScraper(BaseScraper):
                 "See CLOUDFLARE.md for setup instructions."
             )
         assert last_error is not None
+        # Build a concise per-backend failure summary
+        backend_details = []
+        for svc, err in _relay_failures:
+            reason = _classify_relay_error(err)
+            backend_details.append(f"  {svc} → {reason}")
+        details_str = "\n".join(backend_details)
         raise ScrapeError(
-            f"Cloudflare rotation exhausted — all {len(tried)} configured "
-            f"backend(s) ({', '.join(tried)}) failed for {source_slug}. "
-            f"Last error: {last_error}"
+            f"Cloudflare rotation exhausted — {len(tried)} backend(s) tried "
+            f"for {source_slug}, all failed:\n{details_str}"
         )
 
     def _fetch_via_relay_rotate(self, url: str, page: int) -> BeautifulSoup:
@@ -435,6 +472,7 @@ class HtmlScraper(BaseScraper):
         month = timezone.localdate().strftime("%Y-%m")
         source_slug = self.source.slug
         tried: list[str] = []
+        _relay_failures: list[tuple[str, Exception]] = []
         last_error: Exception | None = None
 
         for service in RELAY_ROTATION_ORDER:
@@ -465,6 +503,7 @@ class HtmlScraper(BaseScraper):
                 return soup
             except (ScrapeError, httpx.HTTPStatusError) as exc:
                 last_error = exc
+                _relay_failures.append((service, exc))
                 logger.warning("Relay rotate: %s failed for %s: %s", service, source_slug, exc)
                 continue
 
@@ -477,10 +516,15 @@ class HtmlScraper(BaseScraper):
                 "See CLOUDFLARE.md for setup instructions."
             )
         assert last_error is not None
+        # Build a concise per-backend failure summary
+        backend_details = []
+        for svc, err in _relay_failures:
+            reason = _classify_relay_error(err)
+            backend_details.append(f"  {svc} → {reason}")
+        details_str = "\n".join(backend_details)
         raise ScrapeError(
-            f"Relay rotation exhausted — all {len(tried)} configured "
-            f"backend(s) ({', '.join(tried)}) failed for {source_slug}. "
-            f"Last error: {last_error}"
+            f"Relay rotation exhausted — {len(tried)} backend(s) tried "
+            f"for {source_slug}, all failed:\n{details_str}"
         )
 
     def _dispatch_single_backend(self, service: str, url: str, page: int) -> BeautifulSoup:
