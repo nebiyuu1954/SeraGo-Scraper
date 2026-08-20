@@ -133,6 +133,17 @@ DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
     "scrapfly",
 )
 
+# Relay rotation order for reader-relay sources (e.g. GeezJobs).
+# Jina is cheapest (free), then falls back to CF backends if it fails.
+RELAY_ROTATION_ORDER: tuple[str, ...] = (
+    "jina",
+    "scrapedo",
+    "scrapebadger",
+    "zenrows",
+    "scraperapi",
+    "scrapfly",
+)
+
 
 # ------------------------------------------------------------------
 # Concrete backends — each is a self-contained registration
@@ -328,6 +339,64 @@ class ScrapFlyBackend(CloudflareBackend):
             )
         target_status = int(result.get("status_code") or response.status_code)
         return content, target_status
+
+
+# ------------------------------------------------------------------
+# Reader relay backend (path-based URL pattern)
+# ------------------------------------------------------------------
+
+
+class JinaReaderBackend(CloudflareBackend):
+    """Jina Reader — free relay that fetches any URL and returns raw HTML.
+
+    Unlike the API-based backends above, Jina embeds the target URL in the
+    **path** (``r.jina.ai/<encoded-url>``) and uses custom headers for
+    format control.  This is the cheapest relay (1 credit/req, ~200/day
+    free with a key) and bypasses WAFs that block our IP.
+
+    Free tier: 200 req/day with API key, 20 req/day without.
+    """
+
+    name = "jina"
+    api_url = "https://r.jina.ai"
+    env_key = "JINA_API_KEY"
+    timeout = 60.0
+    credits_per_request = 1
+    monthly_free_credits = 6000  # 200/day × 30 days
+    dashboard_url = "https://jina.ai"
+    tier_description = "1 credit/req, ~6,000 free/mo (200/day)"
+
+    @classmethod
+    def build_request_kwargs(cls, url: str) -> dict[str, Any]:
+        from urllib.parse import quote
+        # Jina embeds the target URL in the path, not query params.
+        # safe='%' keeps already-encoded segments (%XX) intact.
+        encoded_url = quote(url, safe='%')
+        headers: dict[str, str] = {
+            "X-Return-Format": "html",
+            "X-No-Cache": "true",
+        }
+        api_key = getattr(settings, cls.env_key, "") or ""
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return {
+            "method": "GET",
+            "url": f"{cls.api_url}/{encoded_url}",
+            "timeout": cls.timeout,
+            "headers": headers,
+        }
+
+    @classmethod
+    def parse_response(cls, response: httpx.Response, url: str) -> tuple[str, int]:
+        # Jina returns 402 when free-tier quota is exhausted
+        if response.status_code == 402:
+            from core.challenge import ScrapeError
+            raise ScrapeError(
+                "Jina Reader free-tier quota exhausted. "
+                "Set JINA_API_KEY for a higher limit, or wait for quota to reset."
+            )
+        _check_auth_errors(response, "Jina Reader")
+        return _extract_raw_html(response, "Jina Reader", url)
 
 
 # ------------------------------------------------------------------
