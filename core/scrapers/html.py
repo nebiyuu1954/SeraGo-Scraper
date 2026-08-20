@@ -728,7 +728,7 @@ class HtmlScraper(BaseScraper):
                         backoff * (attempt + 1),
                     )
                     time.sleep(backoff * (attempt + 1))
-        if response is None:
+        if page_html is None:
             assert last_error is not None
             if isinstance(last_error, CloudflareChallengeError):
                 raise ScrapeError(
