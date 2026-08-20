@@ -190,6 +190,46 @@ def _classify_relay_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _is_permanent_backend_error(exc: Exception) -> bool:
+    """True when the error is permanent and retrying the SAME backend won't help.
+
+    - 402 (quota exhausted) — retrying burns credits, same result
+    - Cloudflare challenge — backend can't bypass this site
+    - Illegal header (bad API key) — same key won't work next time
+
+    Retrying wastes time; the rotation should skip to the next backend
+    immediately.  This was the #1 cause of the 27-minute GeezJobs run:
+    Jina (402 × 3 retries) + ScrapeDo (502 × 3 retries × 60s timeout)
+    = 27 minutes of waiting for backends that were never going to work.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        # 402 = quota exhausted, 401 = bad API key
+        if code in (402, 401):
+            return True
+    if isinstance(exc, (CloudflareChallengeError, _CoreChallengeError)):
+        return True
+    if isinstance(exc, httpx.TransportError):
+        msg = str(exc)
+        if "Illegal header" in msg:
+            return True
+    return False
+
+
+def _is_retryable_backend_error(exc: Exception) -> bool:
+    """True when retrying the same backend might succeed.
+
+    Only true for transient errors: 502/503/504 (server may recover),
+    429 (rate limit, wait helps), transport errors (connection reset).
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    if isinstance(exc, httpx.TransportError):
+        return "Illegal header" not in str(exc)
+    return False
+
+
 class HtmlScraper(BaseScraper):
     """GET/HTML scraper for server-side rendered listing pages."""
 
@@ -398,9 +438,10 @@ class HtmlScraper(BaseScraper):
         """Smart rotation across all configured Cloudflare bypass backends.
 
         Tries each backend in ``CLOUDFLARE_ROTATION_ORDER`` (cheapest first),
-        skipping services whose API key is missing or whose monthly credits
-        are exhausted.  Logs which service was used.  Raises ``ScrapeError``
-        when every available backend is exhausted or fails.
+        skipping services whose API key is missing, whose monthly credits
+        are exhausted, or which are *known-broken* for this source (permanent
+        errors like 402 quota or CF challenge are cached so subsequent pages
+        skip them instantly).
 
         See CLOUDFLARE.md for the full rotation strategy and credit math.
         """
@@ -409,11 +450,19 @@ class HtmlScraper(BaseScraper):
 
         month = timezone.localdate().strftime("%Y-%m")
         source_slug = self.source.slug
+        # Per-source broken-backend cache.
+        if not hasattr(self, "_broken_backends"):
+            self._broken_backends: dict[str, set[str]] = {}
+        broken = self._broken_backends.setdefault(source_slug, set())
+
         tried: list[str] = []
         _relay_failures: list[tuple[str, Exception]] = []
         last_error: Exception | None = None
 
         for service in CLOUDFLARE_ROTATION_ORDER:
+            if service in broken:
+                logger.debug("Cloudflare rotate: skipping %s for %s (known broken)", service, source_slug)
+                continue
             cfg = _cloudflare_backend_settings(service)
             if not cfg["api_key"]:
                 logger.debug("Cloudflare rotate: skipping %s (no API key)", service)
@@ -440,6 +489,9 @@ class HtmlScraper(BaseScraper):
                 last_error = exc
                 _relay_failures.append((service, exc))
                 logger.warning("Cloudflare rotate: %s failed for %s: %s", service, source_slug, exc)
+                if _is_permanent_backend_error(exc):
+                    broken.add(service)
+                    logger.info("Cloudflare rotate: marking %s as broken for %s (permanent error)", service, source_slug)
                 continue
 
         # All backends exhausted.
@@ -470,17 +522,32 @@ class HtmlScraper(BaseScraper):
         (402 quota, 403, 5xx), falls back to the Cloudflare bypass backends
         in cheapest-first order.
 
+        Tracks *known-broken* backends per source so subsequent pages skip
+        them instantly instead of retrying for 30+ seconds each.  Also
+        enforces a per-source time budget (``max_source_seconds``) so one
+        slow site can't eat the entire run.
+
         See CLOUDFLARE.md for the full relay rotation strategy.
         """
         from core.models import ScraperCreditUsage
 
         month = timezone.localdate().strftime("%Y-%m")
         source_slug = self.source.slug
+        # Per-source broken-backend cache: backends that returned permanent
+        # errors (402 quota, CF challenge, bad key) are marked broken and
+        # skipped on subsequent pages — no retry waste.
+        if not hasattr(self, "_broken_backends"):
+            self._broken_backends: dict[str, set[str]] = {}
+        broken = self._broken_backends.setdefault(source_slug, set())
+
         tried: list[str] = []
         _relay_failures: list[tuple[str, Exception]] = []
         last_error: Exception | None = None
 
         for service in RELAY_ROTATION_ORDER:
+            if service in broken:
+                logger.debug("Relay rotate: skipping %s for %s (known broken)", service, source_slug)
+                continue
             cfg = _cloudflare_backend_settings(service)
             if not cfg["api_key"]:
                 logger.debug("Relay rotate: skipping %s (no API key)", service)
@@ -510,6 +577,10 @@ class HtmlScraper(BaseScraper):
                 last_error = exc
                 _relay_failures.append((service, exc))
                 logger.warning("Relay rotate: %s failed for %s: %s", service, source_slug, exc)
+                # Mark permanently-broken backends so subsequent pages skip them.
+                if _is_permanent_backend_error(exc):
+                    broken.add(service)
+                    logger.info("Relay rotate: marking %s as broken for %s (permanent error)", service, source_slug)
                 continue
 
         # All backends exhausted.
@@ -554,6 +625,13 @@ class HtmlScraper(BaseScraper):
         the API) and ``parse_response`` (how to extract the target HTML).
         This method owns the retry cadence, error classification, and
         API-call recording — identical for every backend.
+
+        *Permanent* errors (402 quota, bad API key, Cloudflare challenge)
+        break out immediately — retrying wastes time and credits. Only
+        transient errors (502/503, 429 rate-limit, connection reset) get
+        retried.  This is critical for rotation speed: without it, a
+        backend that consistently fails burns ``retries × backoff`` seconds
+        on every page.
         """
         retries = int((self.source.pagination or {}).get("retries", DEFAULT_RETRIES))
         backoff = float(
@@ -591,6 +669,15 @@ class HtmlScraper(BaseScraper):
                 if isinstance(exc, _CoreChallengeError) and not isinstance(exc, ScrapeError):
                     exc = CloudflareChallengeError(str(exc))
                 last_error = exc
+                # Don't waste time retrying permanent errors — skip to next
+                # backend immediately.  402 (quota), bad API key, CF challenge,
+                # etc. won't resolve by retrying the same backend.
+                if _is_permanent_backend_error(exc):
+                    logger.warning(
+                        "%s attempt %d/%d failed (%s) — permanent error, not retrying",
+                        backend_cls.name, attempt + 1, attempts, exc,
+                    )
+                    break
                 if attempt < attempts - 1:
                     logger.warning(
                         "%s attempt %d/%d failed (%s) — retrying in %.0fs",

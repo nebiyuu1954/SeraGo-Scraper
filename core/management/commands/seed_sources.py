@@ -291,6 +291,10 @@ GEEZJOBS_PAGINATION = {
     # no items posted today (estimated from the relative posted-ago chips).
     "date_filter": {"field": "published_at"},
     "max_pages": 20,
+    # Hard time budget: relay rotation (Jina → ScrapeDo → ZenRows) can be
+    # slow when backends fail.  90s is enough for ~4 pages; the today boundary
+    # usually stops the sweep much earlier.
+    "max_source_seconds": 90.0,
 }
 
 # Ethiopian Reporter Jobs — WordPress (Careerfy theme, mid-2026 redesign)

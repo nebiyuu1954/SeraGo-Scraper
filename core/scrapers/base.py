@@ -1150,6 +1150,18 @@ class BaseScraper(ABC):
                     break
                 if all_seen_before:
                     break
+                # Per-source time budget: prevent one slow site (e.g. relay
+                # rotation burning 30s per page × 8 pages) from eating the
+                # entire CI run.  Default 120s; overridable via
+                # ``pagination.max_source_seconds``.
+                max_source_seconds = float(
+                    pagination.get("max_source_seconds", 120.0)
+                )
+                if time.monotonic() - started > max_source_seconds:
+                    totals["errors"].append(
+                        f"sweep stopped after {max_source_seconds:.0f}s time budget"
+                    )
+                    break
             else:
                 totals["errors"].append(f"sweep truncated at max_pages={max_pages}")
 
