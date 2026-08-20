@@ -143,6 +143,7 @@ def backend_settings(name: str) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
+    "playwright",
     "scrapedo",
     "scrapebadger",
     "zenrows",

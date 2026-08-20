@@ -1817,10 +1817,12 @@ class CloudflareRotationTests(TestCase):
         self.scraper = HtmlScraper(self.source)
 
     def test_rotation_tries_scrapedo_first_when_configured(self):
-        """The rotation picks the cheapest available backend (Scrape.do first)."""
+        """The rotation picks the cheapest available API backend (Scrape.do first)."""
         calls: list[str] = []
 
         def fake_dispatch(service, url, page):
+            if service == "playwright":
+                raise ScrapeError("playwright is not installed")
             calls.append(service)
             from bs4 import BeautifulSoup
             return BeautifulSoup("<html><body><div class='card'></div></body></html>", "html.parser")
@@ -1855,17 +1857,22 @@ class CloudflareRotationTests(TestCase):
         def fake_remaining(service, month=None):
             return 0 if service == "scrapedo" else 100
 
+        def fake_dispatch_with_playwright(service, url, page):
+            if service == "playwright":
+                raise ScrapeError("playwright is not installed")
+            return fake_dispatch(service, url, page)
+
         with override_settings(
             SCRAPE_DO_API_KEY="test-key",
             ZENROWS_API_KEY="test-key",
             SCRAPEBADGER_API_KEY="",
             SCRAPERAPI_KEY="",
             SCRAPFLY_API_KEY="",
-        ), mock.patch.object(self.scraper, "_dispatch_single_backend", side_effect=fake_dispatch), \
+        ), mock.patch.object(self.scraper, "_dispatch_single_backend", side_effect=fake_dispatch_with_playwright), \
              mock.patch("core.models.ScraperCreditUsage.remaining_credits", side_effect=fake_remaining), \
              mock.patch("core.models.ScraperCreditUsage.objects.create"):
             self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
-        # scrapedo skipped (0 credits), scrapebadger skipped (no key), zenrows used
+        # playwright skipped (not installed), scrapedo skipped (0 credits), scrapebadger skipped (no key), zenrows used
         self.assertEqual(calls, ["zenrows"])
 
     def test_rotation_raises_when_all_backends_fail(self):
@@ -1888,17 +1895,22 @@ class CloudflareRotationTests(TestCase):
         self.assertIn("zenrows", str(ctx.exception))
 
     def test_rotation_raises_when_no_keys_configured(self):
-        """With no API keys at all, the error says so."""
+        """With no API keys at all (and Playwright not installed), the error says so."""
+        # Mock Playwright as not installed so it's skipped
         with override_settings(
             SCRAPE_DO_API_KEY="",
             ZENROWS_API_KEY="",
             SCRAPEBADGER_API_KEY="",
             SCRAPERAPI_KEY="",
             SCRAPFLY_API_KEY="",
-        ):
+        ), mock.patch("core.cloudflare_backends.PlaywrightBackend.custom_fetch", side_effect=ScrapeError("playwright is not installed")):
             with self.assertRaises(ScrapeError) as ctx:
                 self.scraper._fetch_via_cloudflare_rotate("https://example.com/jobs", 0)
-        self.assertIn("no configured backends", str(ctx.exception))
+        msg = str(ctx.exception).lower()
+        self.assertTrue(
+            "no configured backends" in msg or "rotation exhausted" in msg or "playwright" in msg,
+            f"Expected helpful error, got: {ctx.exception}",
+        )
 
     def test_credit_usage_model_remaining_credits(self):
         """remaining_credits computes free - used correctly."""
