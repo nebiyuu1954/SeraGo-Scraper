@@ -3179,6 +3179,141 @@ class TelegramReportTests(TestCase):
             )
         fake_post.assert_called_once()
 
+    def test_runs_overview_shows_all_success(self):
+        # When every sweep found items, the runs line shows ✅ for each.
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            runs=[
+                {"run": 1, "time": "12:00", "hits": 5, "found": 10,
+                 "inserted": 5, "updated": 0, "skipped": 5, "status": "success"},
+                {"run": 2, "time": "23:00", "hits": 3, "found": 8,
+                 "inserted": 3, "updated": 0, "skipped": 5, "status": "success"},
+            ],
+        )
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("📊 Runs", text)
+        self.assertIn("1st run (12:00) ✅", text)
+        self.assertIn("2nd run (23:00) ✅", text)
+        # No failure line when all succeeded.
+        self.assertNotIn("❌", text)
+
+    def test_runs_overview_shows_failure_with_error(self):
+        # A sweep with found=0 shows ❌, and the worst failed site is named.
+        source = Source.objects.create(
+            slug="geezjobs", name="GeezJobs",
+            endpoint="https://geezjobs.com",
+        )
+        AfriworkScrapeLog.objects.create(
+            source=source, day=self.TODAY, status="failed",
+            run_count=1, api_hits=0, items_found=0,
+            scraped_log=[{
+                "status": "failed", "items_found": 0,
+                "started_at": "2026-08-15T12:00:00+03:00",
+                "errors": ["Relay rotation exhausted"],
+                "message": "",
+                "pages_hit": [],
+            }],
+        )
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            runs=[
+                {"run": 1, "time": "12:00", "hits": 0, "found": 0,
+                 "inserted": 0, "updated": 0, "skipped": 0, "status": "failed"},
+            ],
+        )
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("1st run (12:00) ❌", text)
+        self.assertIn("❌ geezjobs failed 1x", text)
+        self.assertIn("Relay rotation exhausted", text)
+
+    def test_runs_overview_mixed_success_and_failure(self):
+        # Some sweeps succeed, some fail — ✅ and ❌ mixed.
+        source = Source.objects.create(
+            slug="geezjobs", name="GeezJobs",
+            endpoint="https://geezjobs.com",
+        )
+        AfriworkScrapeLog.objects.create(
+            source=source, day=self.TODAY, status="failed",
+            run_count=2, api_hits=0, items_found=0,
+            scraped_log=[
+                {
+                    "status": "failed", "items_found": 0,
+                    "started_at": "2026-08-15T12:00:00+03:00",
+                    "errors": ["timeout"], "message": "",
+                    "pages_hit": [],
+                },
+                {
+                    "status": "success", "items_found": 15,
+                    "started_at": "2026-08-15T23:00:00+03:00",
+                    "errors": [], "message": "",
+                    "pages_hit": [{"page": 0, "http_status": 200, "found": 15}],
+                },
+            ],
+        )
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            runs=[
+                {"run": 1, "time": "12:00", "hits": 0, "found": 0,
+                 "inserted": 0, "updated": 0, "skipped": 0, "status": "failed"},
+                {"run": 2, "time": "23:00", "hits": 1, "found": 15,
+                 "inserted": 15, "updated": 0, "skipped": 0, "status": "success"},
+            ],
+        )
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("1st run (12:00) ❌", text)
+        self.assertIn("2nd run (23:00) ✅", text)
+        self.assertIn("❌ geezjobs failed 1x", text)
+
+    def test_runs_overview_skipped_when_no_runs(self):
+        # No runs recorded → no Runs section at all.
+        ScrapeLog.objects.create(day=self.TODAY)
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertNotIn("📊 Runs", text)
+
+    def test_runs_overview_found_gt_zero_is_success(self):
+        # A sweep that found items but status=partial is still ✅
+        # (found > 0 means the site was reachable).
+        ScrapeLog.objects.create(
+            day=self.TODAY,
+            runs=[
+                {"run": 1, "time": "12:00", "hits": 2, "found": 5,
+                 "inserted": 3, "updated": 0, "skipped": 2, "status": "partial"},
+            ],
+        )
+        fixed = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.UTC)
+        with self._post() as fake_post, self._env(), mock.patch(
+            "core.management.commands.telegram_report.timezone.now",
+            return_value=fixed,
+        ):
+            call_command("telegram_report", day=self.TODAY, stdout=io.StringIO())
+        text = fake_post.call_args.kwargs["json"]["text"]
+        self.assertIn("1st run (12:00) ✅", text)
+        self.assertNotIn("❌", text)
+
 
 class SeedSourcesCommandTests(TestCase):
     def test_seed_sources_sets_reporterjobs_to_cloudflare_rotate(self):

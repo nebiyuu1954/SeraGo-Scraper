@@ -106,6 +106,92 @@ def api_issues_for_day(day: date | None = None) -> list[dict]:
     return issues
 
 
+def run_overview_lines(day: str) -> list[str]:
+    """Build the runs overview section for the Telegram report.
+
+    Returns lines like:
+
+        📊 Runs
+        1st run (12:33) ✅, 2nd run (19:32) ✅, 3rd run (19:37) ❌
+        ❌ geezjobs failed 3x — check logs
+
+    The per-sweep ``found`` count decides ✅/❌: found > 0 means the sweep
+    returned *something* (even if all items were duplicates).  found == 0
+    means no site responded at all.
+
+    Empty list when no runs are recorded.
+    """
+    master = ScrapeLog.objects.filter(day=day).first()
+    if not master or not master.runs:
+        return []
+
+    def ordinal(n: int) -> str:
+        if 11 <= (n % 100) <= 13:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{n}{suffix}"
+
+    run_parts: list[str] = []
+    failed_run_count = 0
+    for run_entry in master.runs:
+        n = run_entry.get("run", 0)
+        time_str = run_entry.get("time", "??:??")
+        found = run_entry.get("found", 0)
+        ok = found > 0
+        icon = "✅" if ok else "❌"
+        run_parts.append(f"{ordinal(n)} run ({time_str}) {icon}")
+        if not ok:
+            failed_run_count += 1
+
+    lines = ["📊 Runs", ", ".join(run_parts)]
+
+    # For ❌ runs, find the failed site and show a short error.
+    if failed_run_count > 0:
+        worst = _find_worst_failure(day)
+        if worst:
+            slug, count, msg = worst
+            lines.append(f"❌ {slug} failed {count}x — {msg}")
+        else:
+            lines.append(f"❌ {failed_run_count} run(s) failed — check logs")
+
+    return lines
+
+
+def _find_worst_failure(day: str) -> tuple[str, int, str] | None:
+    """Find the site with the most failures and its error message.
+
+    Returns ``(slug, count, error_message)`` or ``None`` when no per-site
+    failure is recorded for the day.
+    """
+    site_failures: dict[str, dict] = {}
+    for model in SITE_LOG_MODELS:
+        site_logs = model.objects.select_related("source").filter(day=day)
+        for site_log in site_logs:
+            for run_entry in site_log.scraped_log or []:
+                if run_entry.get("items_found", 0) == 0 and run_entry.get(
+                    "status"
+                ) in ("failed", "partial"):
+                    slug = site_log.source.slug
+                    if slug not in site_failures:
+                        errors = run_entry.get("errors") or []
+                        message = run_entry.get("message") or ""
+                        if not message and errors:
+                            message = str(errors[0])
+                        message = message[:100].strip()
+                        site_failures[slug] = {
+                            "count": 0,
+                            "message": message or "unknown error",
+                        }
+                    site_failures[slug]["count"] += 1
+
+    if not site_failures:
+        return None
+
+    worst = max(site_failures.items(), key=lambda x: x[1]["count"])
+    return worst[0], worst[1]["count"], worst[1]["message"]
+
+
 def silent_zero_sources_for_day(day: date | None = None) -> list[dict]:
     """Sources whose day looks like a SILENT failure: clean success, 0 items.
 

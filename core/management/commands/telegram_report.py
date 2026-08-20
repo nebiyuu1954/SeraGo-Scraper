@@ -54,6 +54,7 @@ from core.reporting import (
     defaulted_deadline_summary,
     last_commit_age_days,
     month_bounds,
+    run_overview_lines,
     silent_zero_sources_for_day,
     stat_block,
     week_bounds,
@@ -185,6 +186,12 @@ class Command(BaseCommand):
             if run.get("status") == ScrapeStatus.SUCCESS
         ]
         lines.append(f"✅ successful runs: {', '.join(success_times) or '—'} (Addis)")
+
+        # Per-sweep overview: ✅/❌ per run, with the worst failure highlighted.
+        runs_overview = run_overview_lines(day)
+        if runs_overview:
+            lines.append("")
+            lines.extend(runs_overview)
 
         websites = master.websites or []
         if websites:
