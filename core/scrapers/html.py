@@ -82,6 +82,7 @@ JINA_BASE_URL = "https://r.jina.ai"
 # (no other files need to change).
 from core.cloudflare_backends import (
     DEFAULT_ROTATION_ORDER as CLOUDFLARE_ROTATION_ORDER,
+    RELAY_ROTATION_ORDER,
     CloudflareBackend,
     all_backends,
     backend_settings,
@@ -208,6 +209,11 @@ class HtmlScraper(BaseScraper):
             # Tries each in cheapest-first order, skipping exhausted services.
             # See CLOUDFLARE.md for the full rotation strategy.
             return self._fetch_via_cloudflare_rotate(url, page)
+        if relay == "relay_rotate":
+            # Reader-relay rotation: tries Jina first (cheapest, free),
+            # then falls back to CF backends.  For sources like GeezJobs
+            # where Jina is the primary relay but we want fault tolerance.
+            return self._fetch_via_relay_rotate(url, page)
         if relay == "scrapfly":
             # Anti-bot backend: bypasses Cloudflare-style protection and
             # renders JS (also fixes the JS-skeleton problem). Needs the
@@ -410,6 +416,69 @@ class HtmlScraper(BaseScraper):
         assert last_error is not None
         raise ScrapeError(
             f"Cloudflare rotation exhausted — all {len(tried)} configured "
+            f"backend(s) ({', '.join(tried)}) failed for {source_slug}. "
+            f"Last error: {last_error}"
+        )
+
+    def _fetch_via_relay_rotate(self, url: str, page: int) -> BeautifulSoup:
+        """Reader-relay rotation: Jina first, then CF backends.
+
+        For sources like GeezJobs where Jina is the primary relay (cheapest,
+        free) but we want fault tolerance.  Tries Jina first; if it fails
+        (402 quota, 403, 5xx), falls back to the Cloudflare bypass backends
+        in cheapest-first order.
+
+        See CLOUDFLARE.md for the full relay rotation strategy.
+        """
+        from core.models import ScraperCreditUsage
+
+        month = timezone.localdate().strftime("%Y-%m")
+        source_slug = self.source.slug
+        tried: list[str] = []
+        last_error: Exception | None = None
+
+        for service in RELAY_ROTATION_ORDER:
+            cfg = _cloudflare_backend_settings(service)
+            if not cfg["api_key"]:
+                logger.debug("Relay rotate: skipping %s (no API key)", service)
+                continue
+            # Jina has no credit tracking (free tier), but CF backends do.
+            if service != "jina":
+                remaining = ScraperCreditUsage.remaining_credits(service, month)
+                if remaining <= 0:
+                    logger.info("Relay rotate: skipping %s (credits exhausted for %s)", service, month)
+                    continue
+            tried.append(service)
+            try:
+                logger.info("Relay rotate: trying %s for %s", service, source_slug)
+                soup = self._dispatch_single_backend(service, url, page)
+                # Record credit usage on success (skip Jina — no credit tracking).
+                if service != "jina":
+                    credits_cost = ScraperCreditUsage.SERVICE_CREDITS_PER_REQUEST.get(service, 1)
+                    ScraperCreditUsage.objects.create(
+                        service=service,
+                        credits_used=credits_cost,
+                        month=month,
+                        source_slug=source_slug,
+                    )
+                logger.info("Relay rotate: %s succeeded for %s", service, source_slug)
+                return soup
+            except (ScrapeError, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                logger.warning("Relay rotate: %s failed for %s: %s", service, source_slug, exc)
+                continue
+
+        # All backends exhausted.
+        if not tried:
+            raise ScrapeError(
+                "relay='relay_rotate' has no configured backends — "
+                "set JINA_API_KEY for the primary relay, plus at least one "
+                "of ZENROWS_API_KEY, SCRAPE_DO_API_KEY, etc. for fallback. "
+                "See CLOUDFLARE.md for setup instructions."
+            )
+        assert last_error is not None
+        raise ScrapeError(
+            f"Relay rotation exhausted — all {len(tried)} configured "
             f"backend(s) ({', '.join(tried)}) failed for {source_slug}. "
             f"Last error: {last_error}"
         )
