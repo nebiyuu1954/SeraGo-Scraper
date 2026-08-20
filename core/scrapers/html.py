@@ -516,9 +516,9 @@ class HtmlScraper(BaseScraper):
         if not tried:
             raise ScrapeError(
                 "relay='relay_rotate' has no configured backends — "
-                "set JINA_API_KEY for the primary relay, plus at least one "
-                "of ZENROWS_API_KEY, SCRAPE_DO_API_KEY, etc. for fallback. "
-                "See CLOUDFLARE.md for setup instructions."
+                "set FIRECRAWL_API_KEY or JINA_API_KEY for the primary relay, "
+                "plus at least one of ZENROWS_API_KEY, SCRAPE_DO_API_KEY, etc. "
+                "for fallback. See CLOUDFLARE.md for setup instructions."
             )
         assert last_error is not None
         # Build a concise per-backend failure summary

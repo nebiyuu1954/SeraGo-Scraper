@@ -140,8 +140,9 @@ DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
 )
 
 # Relay rotation order for reader-relay sources (e.g. GeezJobs).
-# Jina is cheapest (free), then falls back to CF backends if it fails.
+# Firecrawl + Jina are cheapest (free), then falls back to CF backends.
 RELAY_ROTATION_ORDER: tuple[str, ...] = (
+    "firecrawl",
     "jina",
     "scrapedo",
     "scrapebadger",
@@ -403,6 +404,71 @@ class JinaReaderBackend(CloudflareBackend):
             )
         _check_auth_errors(response, "Jina Reader")
         return _extract_raw_html(response, "Jina Reader", url)
+
+
+class FirecrawlBackend(CloudflareBackend):
+    """Firecrawl — 1 credit/req, 1,000 free/mo. Returns JSON with HTML.
+
+    POST to /v2/scrape with {"url": "...", "formats": ["html"]}.
+    Response is JSON: {"success": true, "data": {"html": "..."}}.
+    Free tier: 1,000 pages/month, no card required.
+    """
+
+    name = "firecrawl"
+    api_url = "https://api.firecrawl.dev/v2/scrape"
+    env_key = "FIRECRAWL_API_KEY"
+    timeout = 60.0
+    credits_per_request = 1
+    monthly_free_credits = 1000
+    dashboard_url = "https://firecrawl.dev"
+    tier_description = "1 credit/req, 1,000 free/mo"
+
+    @classmethod
+    def build_request_kwargs(cls, url: str) -> dict[str, Any]:
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+        }
+        api_key = cls.get_api_key()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return {
+            "method": "POST",
+            "url": cls.api_url,
+            "timeout": cls.timeout,
+            "json": {"url": url, "formats": ["html"]},
+            "headers": headers,
+        }
+
+    @classmethod
+    def parse_response(cls, response: httpx.Response, url: str) -> tuple[str, int]:
+        _check_auth_errors(response, "Firecrawl", method="POST")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise httpx.HTTPStatusError(
+                "Firecrawl returned a non-JSON body",
+                request=httpx.Request("POST", cls.api_url),
+                response=response,
+            )
+        if not payload.get("success"):
+            error_msg = payload.get("error") or payload.get("message") or "unknown error"
+            raise httpx.HTTPStatusError(
+                f"Firecrawl scrape failed: {error_msg}",
+                request=httpx.Request("POST", cls.api_url),
+                response=response,
+            )
+        data = payload.get("data") or {}
+        content = data.get("html") or ""
+        if not content:
+            raise httpx.HTTPStatusError(
+                "Firecrawl returned empty HTML",
+                request=httpx.Request("POST", cls.api_url),
+                response=response,
+            )
+        from core.challenge import CloudflareChallengeError, is_cloudflare_challenge
+        if is_cloudflare_challenge(content):
+            raise CloudflareChallengeError(f"Cloudflare challenge page returned for {url}")
+        return content, response.status_code
 
 
 # ------------------------------------------------------------------
