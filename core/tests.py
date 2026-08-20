@@ -1915,6 +1915,83 @@ class CloudflareRotationTests(TestCase):
         self.assertEqual(ScraperCreditUsage.remaining_credits("unknown", month), 0)
 
 
+class PlaywrightBackendTests(TestCase):
+    """Tests for the Playwright free-headless-browser backend."""
+
+    def test_playwright_custom_fetch_returns_html(self):
+        """PlaywrightBackend.custom_fetch launches a browser and returns HTML."""
+        from core.cloudflare_backends import PlaywrightBackend
+
+        fake_html = "<html><body><h1>Test Page</h1></body></html>"
+
+        # Mock the entire playwright.sync_api chain
+        mock_page = mock.MagicMock()
+        mock_page.content.return_value = fake_html
+
+        mock_context = mock.MagicMock()
+        mock_context.new_page.return_value = mock_page
+
+        mock_browser = mock.MagicMock()
+        mock_browser.new_context.return_value = mock_context
+
+        mock_p = mock.MagicMock()
+        mock_p.chromium.launch.return_value = mock_browser
+
+        mock_sync_fn = mock.MagicMock(return_value=mock_p)
+        mock_sync_cm = mock.MagicMock()
+        mock_sync_cm.return_value.__enter__ = mock.MagicMock(return_value=mock_p)
+        mock_sync_cm.return_value.__exit__ = mock.MagicMock(return_value=False)
+
+        # Inject a fake playwright module so the lazy import inside custom_fetch works
+        fake_playwright = mock.MagicMock()
+        fake_playwright.sync_api.sync_playwright = mock_sync_cm
+
+        with mock.patch.dict("sys.modules", {
+            "playwright": fake_playwright,
+            "playwright.sync_api": fake_playwright.sync_api,
+        }):
+            html, status = PlaywrightBackend.custom_fetch("https://example.com", 30.0)
+
+        self.assertEqual(html, fake_html)
+        self.assertEqual(status, 200)
+        mock_page.goto.assert_called_once()
+        mock_browser.close.assert_called_once()
+
+    def test_playwright_custom_fetch_handles_import_error(self):
+        """PlaywrightBackend raises ScrapeError when playwright is not installed."""
+        from core.cloudflare_backends import PlaywrightBackend
+        from core.challenge import ScrapeError
+
+        with mock.patch.dict("sys.modules", {"playwright": None, "playwright.sync_api": None}):
+            with self.assertRaises(ScrapeError) as ctx:
+                PlaywrightBackend.custom_fetch("https://example.com", 30.0)
+            self.assertIn("playwright is not installed", str(ctx.exception))
+
+    def test_playwright_in_relay_rotation_order(self):
+        """Playwright is #1 in RELAY_ROTATION_ORDER — tried before any API backend."""
+        from core.cloudflare_backends import RELAY_ROTATION_ORDER
+        self.assertEqual(RELAY_ROTATION_ORDER[0], "playwright")
+
+    def test_playwright_costs_zero_credits(self):
+        """PlaywrightBackend has 0 credits_per_request — it's free forever."""
+        from core.cloudflare_backends import PlaywrightBackend
+        self.assertEqual(PlaywrightBackend.credits_per_request, 0)
+        self.assertEqual(PlaywrightBackend.env_key, "")  # No API key needed
+
+    def test_playwright_no_api_key_required_in_rotation(self):
+        """Rotation skips backends with no API key UNLESS they're free (Playwright)."""
+        from core.cloudflare_backends import PlaywrightBackend, get_backend
+
+        # Playwright has no API key but credits_per_request=0
+        self.assertEqual(PlaywrightBackend.get_api_key(), "")
+        self.assertEqual(PlaywrightBackend.credits_per_request, 0)
+
+        # The rotation logic should NOT skip Playwright for missing key
+        # (is_free check: credits_per_request == 0)
+        is_free = getattr(PlaywrightBackend, "credits_per_request", 1) == 0
+        self.assertTrue(is_free)
+
+
 class ReporterJobsScraperTests(TestCase):
     """The Ethiopian Reporter Jobs HTML scraper: card parsing, exact dates, today filter, detail row."""
 

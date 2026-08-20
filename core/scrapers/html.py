@@ -218,7 +218,10 @@ def _is_permanent_backend_error(exc: Exception) -> bool:
     # quota/auth failures — detect by keyword to skip retries immediately.
     if isinstance(exc, ScrapeError):
         msg = str(exc).lower()
-        if any(kw in msg for kw in ("quota", "exhausted", "rejected", "check the api key")):
+        if any(kw in msg for kw in (
+            "quota", "exhausted", "rejected", "check the api key",
+            "not installed",  # Playwright not installed = won't fix by retrying
+        )):
             return True
     return False
 

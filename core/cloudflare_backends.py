@@ -154,11 +154,11 @@ DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
 # Free backends first (Firecrawl, Jina, Scrape.do, ScrapeBadger), then
 # Playwright (free but slower — real browser), then paid backends.
 RELAY_ROTATION_ORDER: tuple[str, ...] = (
+    "playwright",
     "firecrawl",
     "jina",
     "scrapedo",
     "scrapebadger",
-    "playwright",
     "zenrows",
     "scraperapi",
     "scrapfly",
