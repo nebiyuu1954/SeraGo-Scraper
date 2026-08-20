@@ -1670,6 +1670,125 @@ class GeezJobsScraperTests(TestCase):
         self.assertIsInstance(scraper, HtmlScraper)
 
 
+class RelayRotationTests(TestCase):
+    """Tests for relay_rotate — Jina-first rotation with CF fallback."""
+
+    def setUp(self):
+        self.source = Source.objects.create(
+            slug="geezjobs",
+            name="GeezJobs",
+            endpoint="https://geezjobs.com/search-jobs",
+            scraper_type="html",
+            only_today=True,
+            pagination={
+                "relay": "relay_rotate",
+                "page_1_based": True,
+                "page_key": "page",
+                "page_size": 15,
+                "timeout": 60.0,
+            },
+        )
+        self.scraper = GeezJobsScraper(self.source)
+
+    def _make_response(self, status_code: int, text: str = "") -> mock.Mock:
+        """Create a mock httpx.Response with proper status_code as int."""
+        resp = mock.Mock()
+        resp.status_code = status_code
+        resp.raise_for_status = lambda: None
+        resp.text = text
+        return resp
+
+    def test_relay_rotate_succeeds_on_jina_first_try(self):
+        """Jina works → no CF backends tried."""
+        with override_settings(JINA_API_KEY="test-jina-key"), mock.patch(
+            "core.scrapers.html.httpx.get"
+        ) as get:
+            get.return_value = self._make_response(200, GEEZJOBS_SAMPLE_HTML)
+            self.scraper.fetch(0)
+        # Jina is the only backend called
+        self.assertEqual(get.call_count, 1)
+        url = get.call_args.kwargs["url"]
+        self.assertIn("r.jina.ai", url)
+
+    def test_relay_rotate_falls_back_to_cf_when_jina_fails(self):
+        """Jina 402 → falls back to Scrape.do."""
+        jina_calls = {"n": 0}
+
+        def fake_get(**kwargs):
+            url = kwargs.get("url", "")
+            if "r.jina.ai" in url:
+                jina_calls["n"] += 1
+                return self._make_response(402, "")
+            # CF backend call — succeed
+            return self._make_response(200, GEEZJOBS_SAMPLE_HTML)
+
+        with override_settings(
+            JINA_API_KEY="test-key",
+            SCRAPE_DO_API_KEY="test-scrapedo",
+        ), mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            self.scraper.fetch(0)
+        # Jina was tried first, then Scrape.do succeeded
+        self.assertGreaterEqual(jina_calls["n"], 1)
+
+    def test_relay_rotate_tries_all_backends_when_all_fail(self):
+        """All backends fail → ScrapeError listing which ones were tried."""
+
+        def fake_get(**kwargs):
+            return self._make_response(500, "error")
+
+        with override_settings(
+            JINA_API_KEY="test-key",
+            SCRAPE_DO_API_KEY="test-scrapedo",
+            ZENROWS_API_KEY="test-zenrows",
+        ), mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
+            "core.scrapers.html.time.sleep"
+        ):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertIn("exhausted", str(ctx.exception).lower())
+
+    def test_relay_rotate_skips_backends_without_keys(self):
+        """Backends with no API key are skipped silently."""
+
+        def fake_get(**kwargs):
+            return self._make_response(402, "")
+
+        # Only Jina key set, no CF keys
+        with override_settings(JINA_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get", side_effect=fake_get
+        ), mock.patch("core.scrapers.html.time.sleep"):
+            with self.assertRaises(ScrapeError):
+                self.scraper.fetch(0)
+        # Should have tried Jina (no CF backends available)
+
+    def test_relay_rotate_no_backends_configured(self):
+        """No keys at all → clear error message."""
+        with override_settings(
+            JINA_API_KEY="",
+            SCRAPE_DO_API_KEY="",
+            SCRAPEBADGER_API_KEY="",
+            ZENROWS_API_KEY="",
+            SCRAPERAPI_KEY="",
+            SCRAPFLY_API_KEY="",
+        ), mock.patch("core.scrapers.html.httpx.get"):
+            with self.assertRaises(ScrapeError) as ctx:
+                self.scraper.fetch(0)
+        self.assertIn("no configured backends", str(ctx.exception).lower())
+
+    def test_relay_rotate_url_uses_jina_path_encoding(self):
+        """Jina backend builds the relay URL with path-encoded target."""
+        with override_settings(JINA_API_KEY="test-key"), mock.patch(
+            "core.scrapers.html.httpx.get"
+        ) as get:
+            get.return_value = self._make_response(200, GEEZJOBS_SAMPLE_HTML)
+            self.scraper.fetch(1)  # page 1 → ?page=2
+        url = get.call_args.kwargs["url"]
+        # Jina uses path-based URL encoding
+        self.assertIn("r.jina.ai/https%3A%2F%2Fgeezjobs.com%2Fsearch-jobs%3Fpage%3D2", url)
+
+
 class CloudflareRotationTests(TestCase):
     """Tests for the smart Cloudflare rotation dispatcher."""
 
