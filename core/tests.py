@@ -1767,12 +1767,17 @@ class RelayRotationTests(TestCase):
 
     def test_relay_rotate_succeeds_on_jina_first_try(self):
         """Jina works → no CF backends tried."""
+        # Playwright is first in rotation but not installed locally;
+        # mock it to fail so Jina is tried next.
         with override_settings(JINA_API_KEY="test-jina-key"), mock.patch(
             "core.scrapers.html.httpx.get"
-        ) as get:
+        ) as get, mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("not installed"),
+        ):
             get.return_value = self._make_response(200, GEEZJOBS_SAMPLE_HTML)
             self.scraper.fetch(0)
-        # Jina is the only backend called
+        # Playwright tried first (failed), then Jina succeeded
         self.assertEqual(get.call_count, 1)
         url = get.call_args.kwargs["url"]
         self.assertIn("r.jina.ai", url)
@@ -1794,9 +1799,12 @@ class RelayRotationTests(TestCase):
             SCRAPE_DO_API_KEY="test-scrapedo",
         ), mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
             "core.scrapers.html.time.sleep"
+        ), mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("not installed"),
         ):
             self.scraper.fetch(0)
-        # Jina was tried first, then Scrape.do succeeded
+        # Playwright tried first (failed), then Jina tried, then Scrape.do succeeded
         self.assertGreaterEqual(jina_calls["n"], 1)
 
     def test_relay_rotate_tries_all_backends_when_all_fail(self):
@@ -1811,6 +1819,9 @@ class RelayRotationTests(TestCase):
             ZENROWS_API_KEY="test-zenrows",
         ), mock.patch("core.scrapers.html.httpx.get", side_effect=fake_get), mock.patch(
             "core.scrapers.html.time.sleep"
+        ), mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("not installed"),
         ):
             with self.assertRaises(ScrapeError) as ctx:
                 self.scraper.fetch(0)
@@ -1822,10 +1833,13 @@ class RelayRotationTests(TestCase):
         def fake_get(**kwargs):
             return self._make_response(402, "")
 
-        # Only Jina key set, no CF keys
+        # Only Jina key set, no CF keys; Playwright is free but not installed
         with override_settings(JINA_API_KEY="test-key"), mock.patch(
             "core.scrapers.html.httpx.get", side_effect=fake_get
-        ), mock.patch("core.scrapers.html.time.sleep"):
+        ), mock.patch("core.scrapers.html.time.sleep"), mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("not installed"),
+        ):
             with self.assertRaises(ScrapeError):
                 self.scraper.fetch(0)
         # Should have tried Jina (no CF backends available)
@@ -1846,7 +1860,10 @@ class RelayRotationTests(TestCase):
             ZENROWS_API_KEY="",
             SCRAPERAPI_KEY="",
             SCRAPFLY_API_KEY="",
-        ), mock.patch("core.scrapers.html.httpx.get"):
+        ), mock.patch("core.scrapers.html.httpx.get"), mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("playwright not installed"),
+        ):
             with self.assertRaises(ScrapeError) as ctx:
                 self.scraper.fetch(0)
         msg = str(ctx.exception).lower()
@@ -1861,7 +1878,10 @@ class RelayRotationTests(TestCase):
         """Jina backend builds the relay URL with path-encoded target."""
         with override_settings(JINA_API_KEY="test-key"), mock.patch(
             "core.scrapers.html.httpx.get"
-        ) as get:
+        ) as get, mock.patch(
+            "core.cloudflare_backends.PlaywrightBackend.custom_fetch",
+            side_effect=ScrapeError("not installed"),
+        ):
             get.return_value = self._make_response(200, GEEZJOBS_SAMPLE_HTML)
             self.scraper.fetch(1)  # page 1 → ?page=2
         url = get.call_args.kwargs["url"]
