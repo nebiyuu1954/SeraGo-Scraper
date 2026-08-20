@@ -31,7 +31,7 @@ Cloudflare-fronted pages too — it is NOT a challenge marker.
 
 ## 2. The rotation backends
 
-We maintain 6 backends (1 reader relay + 5 anti-bot APIs), each with a
+We maintain 8 backends (1 reader relay + 5 anti-bot APIs + Playwright + Firecrawl), each with a
 free tier. The scraper rotates across them cheapest-first.
 
 | # | Service | Type | API URL | Auth | Request format | Response format | Free tier/mo | Credits/req |
@@ -42,6 +42,8 @@ free tier. The scraper rotates across them cheapest-first.
 | 4 | **ZenRows** | API | `https://api.zenrows.com/v1/` | `apikey` param | GET `?apikey=KEY&url=URL&js_render=true&premium_proxy=true` | HTML body | 5,000 | 25 |
 | 5 | **ScraperAPI** | API | `https://api.scraperapi.com` | `api_key` param | GET `?api_key=KEY&render=true&url=URL` | HTML body | 1,000 | 5-75 |
 | 6 | **ScrapFly** | API | `https://api.scrapfly.io/scrape` | `key` param | GET `?url=URL&key=KEY&asp=true&render_js=true` | JSON `{"result": {"content": "HTML"}}` | 1,000 | 30-80 |
+| 7 | **Firecrawl** | API | `https://api.firecrawl.dev/v2/scrape` | Bearer header | POST `{"url": "URL", "formats": ["html"]}` | JSON `{"data": {"html": "HTML"}}` | 1,000 | 1 |
+| 8 | **Playwright** | Browser | Local Chromium | None | Launches headless browser | HTML body | **Unlimited** | **0** |
 
 ### Key differences
 
@@ -56,6 +58,8 @@ free tier. The scraper rotates across them cheapest-first.
   Best free tier among API backends (5,000 credits).
 - **ScraperAPI**: Simplest API. Credit cost varies (5-75).
 - **ScrapFly**: Most expensive. `asp=true` for anti-bot.
+- **Firecrawl**: 1 credit/req, 1,000 free/mo. POST endpoint. Returns JSON with HTML.
+- **Playwright**: **FREE FOREVER** — launches a real Chromium browser that renders JavaScript. No API key needed. Runs on GitHub Actions. Slower (~10-15s per page) but the most reliable option for JS-heavy sites and the ultimate fallback when all API backends fail.
 
 ### Key differences
 
@@ -92,24 +96,32 @@ There are **two rotation modes**, depending on the source's needs:
 
 **`relay_rotate`** — for reader-relay sources (e.g. GeezJobs):
 ```
-Jina → Scrape.do → ScrapeBadger → ZenRows → ScraperAPI → ScrapFly
+Firecrawl → Jina → Scrape.do → ScrapeBadger → Playwright → ZenRows → ScraperAPI → ScrapFly
 ```
-Tries Jina first (cheapest, free). If Jina fails (402 quota, 403, 5xx),
-falls back to CF backends in cheapest-first order.
+Tries free backends first (Firecrawl, Jina, Scrape.do, ScrapeBadger), then
+Playwright (free but slower — real browser), then paid backends.
 
 **`cloudflare_rotate`** — for CF-protected sites (e.g. ReporterJobs):
 ```
 Scrape.do → ScrapeBadger → ZenRows → ScraperAPI → ScrapFly
 ```
-Same as above but without Jina (CF backends only).
+Same as above but without Jina/Firecrawl (CF backends only).
 
-**Why Jina first in relay_rotate:**
-1. Jina: 1 credit/req, 6,000 free/mo — cheapest by far
-2. Scrape.do: 1 credit/req, 1,000 free — best CF backend
-3. ScrapeBadger: 1-3 credits/req, 1,000 free
-4. ZenRows: 25 credits/req, 5,000 free = 200 requests
-5. ScraperAPI: 5-75 credits/req, 1,000 free
-6. ScrapFly: 30-80 credits/req — most expensive
+**Why this order:**
+1. Firecrawl: 1 credit/req, 1,000 free/mo
+2. Jina: 1 credit/req, 6,000 free/mo
+3. Scrape.do: 1 credit/req, 1,000 free — best CF backend
+4. ScrapeBadger: 1-3 credits/req, 1,000 free
+5. **Playwright: 0 credits, unlimited — FREE FOREVER** (last free option)
+6. ZenRows: 25 credits/req, 5,000 free = 200 requests
+7. ScraperAPI: 5-75 credits/req, 1,000 free
+8. ScrapFly: 30-80 credits/req — most expensive
+
+**Playwright** is the nuclear option: it launches a real Chromium browser that
+renders JavaScript and passes most bot detection. It costs $0 forever (runs on
+GitHub Actions free tier) but is slower (~10-15s per page). It's the last
+resort before hitting paid backends, and it works for sites that require
+client-side JS rendering (like ReporterJobs' Careerfy theme).
 
 ### Credit tracking
 
@@ -126,17 +138,23 @@ hits 0, it's skipped for the rest of the month.
 
 ## 4. Budget math
 
-### Combined free budget (all 6 backends)
+### Combined free budget (all 8 backends)
 
 | Service | Credits/mo | Credits/req | Requests/mo |
 |---------|-----------|-------------|-------------|
+| Firecrawl | 1,000 | 1 | 1,000 |
 | Jina Reader | 6,000 | 1 | **6,000** |
 | Scrape.do | 1,000 | 1 | 1,000 |
 | ScrapeBadger | 1,000 | 1-3 | 333-1,000 |
+| **Playwright** | **Unlimited** | **0** | **∞** |
 | ZenRows | 5,000 | 25 | 200 |
 | ScraperAPI | 1,000 | 5-75 | 13-200 |
 | ScrapFly | 1,000 | 30-80 | 12-33 |
-| **TOTAL** | | | **~7,558-8,433** |
+| **TOTAL** | | | **~8,558-9,433 + ∞** |
+
+**Playwright is free forever** — it runs on GitHub Actions (2,000 free
+minutes/month for private repos). It's slower (~10-15s per page) but
+costs $0 and works for any site that requires JavaScript rendering.
 
 ### Per-site projections (current: 2 runs/day)
 
@@ -268,9 +286,13 @@ LIMIT 50;
 All keys are optional — the scraper uses whichever are configured.
 The rotation skips backends whose key is missing.
 
+**Playwright needs no API key** — it's free forever (runs on GitHub Actions).
+If all API backends fail, Playwright is the automatic fallback.
+
 ```
 # Primary relay (for relay_rotate sources like GeezJobs)
 JINA_API_KEY=...          # jina.ai → free key raises relay limit to 200/day
+FIRECRAWL_API_KEY=...     # firecrawl.dev → Dashboard → API Key (1 credit/req)
 
 # Anti-bot backends (for cloudflare_rotate and relay_rotate fallback)
 SCRAPE_DO_API_KEY=...     # scrape.do → Dashboard → API Token (1 credit/req)
@@ -278,6 +300,10 @@ SCRAPEBADGER_API_KEY=...  # scrapebadger.com → Dashboard → API Key (1-3 cred
 ZENROWS_API_KEY=...       # zenrows.com → Dashboard → API Keys (25 credits/req)
 SCRAPERAPI_KEY=...        # scraperapi.com → Dashboard → API Key (5-75 credits/req)
 SCRAPFLY_API_KEY=...      # scrapfly.io → Dashboard → API Keys (30-80 credits/req)
+
+# Playwright (FREE — no key needed)
+# Installed automatically in GitHub Actions workflow.
+# For local dev: pip install playwright && playwright install chromium --with-deps
 ```
 
 Keys are stored as GitHub Actions secrets AND in `.env` for local dev.

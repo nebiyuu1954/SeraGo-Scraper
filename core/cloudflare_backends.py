@@ -86,6 +86,17 @@ class CloudflareBackend(ABC):
         Raises ``CloudflareChallengeError`` if the challenge page leaked through.
         """
 
+    @classmethod
+    def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
+        """Optional: bypass httpx entirely and fetch HTML directly.
+
+        If this returns ``(html, status_code)``, it is used instead of the
+        standard httpx flow.  Return ``None`` to use the default httpx path.
+        Used by backends like Playwright that launch a real browser instead
+        of making an HTTP request.
+        """
+        return None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Auto-register subclasses that set ``name``."""
         super().__init_subclass__(**kwargs)
@@ -140,12 +151,14 @@ DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
 )
 
 # Relay rotation order for reader-relay sources (e.g. GeezJobs).
-# Firecrawl + Jina are cheapest (free), then falls back to CF backends.
+# Free backends first (Firecrawl, Jina, Scrape.do, ScrapeBadger), then
+# Playwright (free but slower — real browser), then paid backends.
 RELAY_ROTATION_ORDER: tuple[str, ...] = (
     "firecrawl",
     "jina",
     "scrapedo",
     "scrapebadger",
+    "playwright",
     "zenrows",
     "scraperapi",
     "scrapfly",
@@ -469,6 +482,91 @@ class FirecrawlBackend(CloudflareBackend):
         if is_cloudflare_challenge(content):
             raise CloudflareChallengeError(f"Cloudflare challenge page returned for {url}")
         return content, response.status_code
+
+
+# ------------------------------------------------------------------
+# Playwright backend (free headless browser, no API key needed)
+# ------------------------------------------------------------------
+
+
+class PlaywrightBackend(CloudflareBackend):
+    """Playwright — free headless browser. No API key needed.
+
+    Launches Chromium, navigates to the URL, waits for JavaScript to
+    render, and returns the HTML.  Works for any site that requires
+    client-side JS rendering (e.g. Careerfy WordPress themes) or that
+    blocks API-based scrapers.
+
+    Free tier: unlimited — runs on GitHub Actions' free runner minutes.
+    Cost: $0 forever.  Slower than API backends (~10-15s per page)
+    because it launches a real browser, but it's the most reliable
+    option for JS-heavy sites.
+
+    Requires ``playwright`` to be installed in the Python environment.
+    Add to GitHub Actions workflow::
+
+        pip install playwright
+        playwright install chromium --with-deps
+    """
+
+    name = "playwright"
+    api_url = ""  # Not an API — uses a local browser
+    env_key = ""  # No API key needed
+    timeout = 45.0  # Browser navigation timeout
+    credits_per_request = 0  # Free!
+    monthly_free_credits = 999_999  # Unlimited
+    dashboard_url = "https://playwright.dev/python/"
+    tier_description = "0 credits/req, unlimited (free headless browser)"
+
+    @classmethod
+    def build_request_kwargs(cls, url: str) -> dict[str, Any]:
+        # Not used — custom_fetch bypasses httpx entirely.
+        return {}
+
+    @classmethod
+    def parse_response(cls, response: httpx.Response, url: str) -> tuple[str, int]:
+        # Not used — custom_fetch bypasses httpx entirely.
+        raise NotImplementedError("PlaywrightBackend uses custom_fetch, not httpx")
+
+    @classmethod
+    def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
+        """Launch Chromium, navigate to URL, return rendered HTML."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            from core.challenge import ScrapeError
+            raise ScrapeError(
+                "playwright is not installed — add 'playwright' to "
+                "requirements.txt or install it in the GitHub Actions workflow: "
+                "pip install playwright && playwright install chromium --with-deps"
+            )
+
+        timeout_ms = int(timeout * 1000)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/151.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1920, "height": 1080},
+                java_script_enabled=True,
+            )
+            page = context.new_page()
+            try:
+                page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+                html = page.content()
+                return html, 200
+            finally:
+                context.close()
+                browser.close()
 
 
 # ------------------------------------------------------------------

@@ -1764,7 +1764,14 @@ class RelayRotationTests(TestCase):
         # Should have tried Jina (no CF backends available)
 
     def test_relay_rotate_no_backends_configured(self):
-        """No keys at all → clear error message."""
+        """No keys at all → clear error message.
+
+        Playwright is free (no key needed) and is in the rotation, so even
+        with all API keys empty the error is "rotation exhausted" (Playwright
+        tried but failed because it's not installed), not "no configured
+        backends".  Either message is acceptable — the test checks that the
+        run fails loudly with a helpful message.
+        """
         with override_settings(
             JINA_API_KEY="",
             SCRAPE_DO_API_KEY="",
@@ -1775,7 +1782,13 @@ class RelayRotationTests(TestCase):
         ), mock.patch("core.scrapers.html.httpx.get"):
             with self.assertRaises(ScrapeError) as ctx:
                 self.scraper.fetch(0)
-        self.assertIn("no configured backends", str(ctx.exception).lower())
+        msg = str(ctx.exception).lower()
+        # Either "no configured backends" (no free backends) or
+        # "rotation exhausted" (Playwright tried but not installed).
+        self.assertTrue(
+            "no configured backends" in msg or "rotation exhausted" in msg or "playwright" in msg,
+            f"Expected helpful error, got: {ctx.exception}",
+        )
 
     def test_relay_rotate_url_uses_jina_path_encoding(self):
         """Jina backend builds the relay URL with path-encoded target."""

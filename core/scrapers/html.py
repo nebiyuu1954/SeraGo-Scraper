@@ -196,6 +196,7 @@ def _is_permanent_backend_error(exc: Exception) -> bool:
     - 402 (quota exhausted) — retrying burns credits, same result
     - Cloudflare challenge — backend can't bypass this site
     - Illegal header (bad API key) — same key won't work next time
+    - ScrapeError with quota/auth keywords — backend rejected us permanently
 
     Retrying wastes time; the rotation should skip to the next backend
     immediately.  This was the #1 cause of the 27-minute GeezJobs run:
@@ -212,6 +213,12 @@ def _is_permanent_backend_error(exc: Exception) -> bool:
     if isinstance(exc, httpx.TransportError):
         msg = str(exc)
         if "Illegal header" in msg:
+            return True
+    # Jina and other backends raise ScrapeError (not HTTPStatusError) for
+    # quota/auth failures — detect by keyword to skip retries immediately.
+    if isinstance(exc, ScrapeError):
+        msg = str(exc).lower()
+        if any(kw in msg for kw in ("quota", "exhausted", "rejected", "check the api key")):
             return True
     return False
 
@@ -464,16 +471,24 @@ class HtmlScraper(BaseScraper):
                 logger.debug("Cloudflare rotate: skipping %s for %s (known broken)", service, source_slug)
                 continue
             cfg = _cloudflare_backend_settings(service)
-            if not cfg["api_key"]:
+            # Backends with no API key are skipped UNLESS they're free
+            # (e.g. Playwright — no key needed, runs locally).
+            backend_cls = get_backend(service)
+            is_free = backend_cls is not None and getattr(backend_cls, "credits_per_request", 1) == 0
+            if not cfg["api_key"] and not is_free:
                 logger.debug("Cloudflare rotate: skipping %s (no API key)", service)
                 continue
-            remaining = ScraperCreditUsage.remaining_credits(service, month)
-            if remaining <= 0:
-                logger.info("Cloudflare rotate: skipping %s (credits exhausted for %s)", service, month)
-                continue
+            # Free backends skip credit checks entirely.
+            if not is_free:
+                remaining = ScraperCreditUsage.remaining_credits(service, month)
+                if remaining <= 0:
+                    logger.info("Cloudflare rotate: skipping %s (credits exhausted for %s)", service, month)
+                    continue
+            else:
+                remaining = 999_999  # free = unlimited
             tried.append(service)
             try:
-                logger.info("Cloudflare rotate: trying %s for %s (remaining credits: ~%d)", service, source_slug, remaining)
+                logger.info("Cloudflare rotate: trying %s for %s%s", service, source_slug, f" (remaining credits: ~{remaining})" if not is_free else " (free)")
                 soup = self._dispatch_single_backend(service, url, page)
                 # Record credit usage on success.
                 credits_cost = ScraperCreditUsage.SERVICE_CREDITS_PER_REQUEST.get(service, 1)
@@ -549,21 +564,27 @@ class HtmlScraper(BaseScraper):
                 logger.debug("Relay rotate: skipping %s for %s (known broken)", service, source_slug)
                 continue
             cfg = _cloudflare_backend_settings(service)
-            if not cfg["api_key"]:
+            # Backends with no API key are skipped UNLESS they're free
+            # (e.g. Playwright — no key needed, runs locally).
+            backend_cls = get_backend(service)
+            is_free = backend_cls is not None and getattr(backend_cls, "credits_per_request", 1) == 0
+            if not cfg["api_key"] and not is_free:
                 logger.debug("Relay rotate: skipping %s (no API key)", service)
                 continue
-            # Jina has no credit tracking (free tier), but CF backends do.
-            if service != "jina":
+            # Skip credit checks for free backends and Jina.
+            if not is_free and service != "jina":
                 remaining = ScraperCreditUsage.remaining_credits(service, month)
                 if remaining <= 0:
                     logger.info("Relay rotate: skipping %s (credits exhausted for %s)", service, month)
                     continue
+            else:
+                remaining = 999_999  # free = unlimited
             tried.append(service)
             try:
-                logger.info("Relay rotate: trying %s for %s", service, source_slug)
+                logger.info("Relay rotate: trying %s for %s%s", service, source_slug, " (free)" if is_free else "")
                 soup = self._dispatch_single_backend(service, url, page)
-                # Record credit usage on success (skip Jina — no credit tracking).
-                if service != "jina":
+                # Record credit usage on success (skip free backends and Jina).
+                if not is_free and service != "jina":
                     credits_cost = ScraperCreditUsage.SERVICE_CREDITS_PER_REQUEST.get(service, 1)
                     ScraperCreditUsage.objects.create(
                         service=service,
@@ -646,6 +667,25 @@ class HtmlScraper(BaseScraper):
         last_error: Exception | None = None
         for attempt in range(attempts):
             try:
+                # Backends with custom_fetch (e.g. Playwright) bypass httpx
+                # entirely — they launch a real browser or use a different
+                # transport.  If custom_fetch returns HTML, use it directly;
+                # otherwise fall through to the standard httpx path.
+                custom_timeout = float(source_timeout) if source_timeout else backend_cls.timeout
+                custom_result = backend_cls.custom_fetch(url, custom_timeout)
+                if custom_result is not None:
+                    html, status = custom_result
+                    # No httpx response object — create a minimal one for
+                    # the Cloudflare challenge check.
+                    page_html = html
+                    target_status = status
+                    # Run the challenge check on the custom-fetched HTML.
+                    from core.challenge import is_cloudflare_challenge
+                    if is_cloudflare_challenge(html):
+                        raise CloudflareChallengeError(
+                            f"Cloudflare challenge page returned for {url}"
+                        )
+                    break
                 req_kwargs = backend_cls.build_request_kwargs(url)
                 method = req_kwargs.pop("method", "GET")
                 if source_timeout is not None:

@@ -15,3 +15,8 @@ psycopg[binary]>=3.1
 
 # Serves Django static files (admin) in production on the free VM.
 whitenoise>=6.6
+
+# Headless browser for JS-rendered sites (PlaywrightBackend).
+# Free forever — runs on GitHub Actions.  The browser binary is
+# installed separately: ``playwright install chromium --with-deps``
+playwright>=1.40
