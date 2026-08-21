@@ -529,9 +529,24 @@ class PlaywrightBackend(CloudflareBackend):
         # Not used — custom_fetch bypasses httpx entirely.
         raise NotImplementedError("PlaywrightBackend uses custom_fetch, not httpx")
 
+    #: Seconds to wait after the page load event for JS-rendered content
+    #: (Lucide icons, Careerfy cards, etc.) to appear.  Kept short — the
+    #: heavy lifting is done by the page's own scripts during load.
+    _JS_RENDER_WAIT_MS: int = 3000
+
     @classmethod
     def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
-        """Launch Chromium, navigate to URL, return rendered HTML."""
+        """Launch Chromium, navigate to URL, return rendered HTML.
+
+        Uses ``wait_until="load"`` instead of ``"networkidle"``: the load
+        event fires once all resources (scripts, stylesheets, images) are
+        fetched, which is sufficient for JS-rendered content.  ``networkidle"
+        never settles on sites with continuous analytics/tracking traffic
+        (e.g. ReporterJobs' Careerfy theme), causing 160s timeouts.
+
+        After the load event, a brief wait lets client-side JS finish
+        rendering (Lucide icon replacement, Careerfy card injection, etc.).
+        """
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -562,7 +577,14 @@ class PlaywrightBackend(CloudflareBackend):
             )
             page = context.new_page()
             try:
-                page.goto(url, timeout=timeout_ms, wait_until="networkidle")
+                # "load" waits for all resources (scripts, styles, images)
+                # to finish — sufficient for JS-rendered content.  Unlike
+                # "networkidle" it doesn't wait for analytics/tracking XHR
+                # to settle, so it works on sites with continuous AJAX.
+                page.goto(url, timeout=timeout_ms, wait_until="load")
+                # Brief pause for client-side JS to finish rendering
+                # (Lucide icons, Careerfy cards, lazy-loaded elements).
+                page.wait_for_timeout(cls._JS_RENDER_WAIT_MS)
                 html = page.content()
                 return html, 200
             finally:
