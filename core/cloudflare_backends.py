@@ -143,12 +143,15 @@ def backend_settings(name: str) -> dict[str, Any]:
 # ------------------------------------------------------------------
 
 DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
-    "playwright",
+    # Scrape.do first — cheapest API backend (1 credit/req, 1,000 free/mo)
+    # and can bypass Cloudflare Turnstile.  Playwright is last because
+    # Turnstile blocks headless browsers from datacenter IPs.
     "scrapedo",
     "scrapebadger",
     "zenrows",
     "scraperapi",
     "scrapfly",
+    "playwright",
 )
 
 # Relay rotation order for reader-relay sources (e.g. GeezJobs).
@@ -631,7 +634,14 @@ class PlaywrightBackend(CloudflareBackend):
            try clicking the Turnstile checkbox iframe.
         """
         try:
-            from playwright.sync_api import sync_playwright
+            # Try rebrowser-playwright first — it patches CDP detection
+            # that Cloudflare Turnstile uses to identify headless browsers.
+            # Falls back to regular playwright if not installed.
+            try:
+                from rebrowser_playwright.sync_api import sync_playwright
+                logger.info("Using rebrowser-playwright (CDP-patched)")
+            except ImportError:
+                from playwright.sync_api import sync_playwright
         except ImportError:
             from core.challenge import ScrapeError
             raise ScrapeError(

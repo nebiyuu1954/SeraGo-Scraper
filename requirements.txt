@@ -19,4 +19,10 @@ whitenoise>=6.6
 # Headless browser for JS-rendered sites (PlaywrightBackend).
 # Free forever — runs on GitHub Actions.  The browser binary is
 # installed separately: ``playwright install chromium --with-deps``
+#
+# rebrowser-playwright is a CDP-patched drop-in replacement that
+# bypasses Cloudflare Turnstile detection.  If installed, it's used
+# automatically; otherwise regular playwright works fine for non-
+# Cloudflare sites (GeezJobs).
+rebrowser-playwright>=1.50
 playwright>=1.40

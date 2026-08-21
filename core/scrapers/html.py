@@ -690,7 +690,18 @@ class HtmlScraper(BaseScraper):
                     page_html = html
                     target_status = status
                     break
+                # custom_fetch returned None — the backend couldn't fetch
+                # (e.g. Playwright's Turnstile didn't resolve).  Fall through
+                # to the httpx path ONLY if the backend supports it (has a
+                # real build_request_kwargs).  Playwright and other browser
+                # backends return {} — crashing httpx.get(**{}).
                 req_kwargs = backend_cls.build_request_kwargs(url)
+                if not req_kwargs:
+                    last_error = ScrapeError(
+                        f"{backend_cls.name} custom_fetch returned None "
+                        "and has no httpx fallback"
+                    )
+                    break
                 method = req_kwargs.pop("method", "GET")
                 if source_timeout is not None:
                     req_kwargs["timeout"] = float(source_timeout)
