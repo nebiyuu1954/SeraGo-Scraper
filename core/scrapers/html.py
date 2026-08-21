@@ -678,16 +678,17 @@ class HtmlScraper(BaseScraper):
                 custom_result = backend_cls.custom_fetch(url, custom_timeout)
                 if custom_result is not None:
                     html, status = custom_result
-                    # No httpx response object — create a minimal one for
-                    # the Cloudflare challenge check.
-                    page_html = html
-                    target_status = status
-                    # Run the challenge check on the custom-fetched HTML.
+                    # Run the challenge check BEFORE accepting the HTML.
+                    # If we set page_html first and then raise on challenge,
+                    # the post-loop check thinks we got valid content.
                     from core.challenge import is_cloudflare_challenge
                     if is_cloudflare_challenge(html):
                         raise CloudflareChallengeError(
                             f"Cloudflare challenge page returned for {url}"
                         )
+                    # Only accept the HTML after it passes the challenge check.
+                    page_html = html
+                    target_status = status
                     break
                 req_kwargs = backend_cls.build_request_kwargs(url)
                 method = req_kwargs.pop("method", "GET")
