@@ -530,22 +530,105 @@ class PlaywrightBackend(CloudflareBackend):
         raise NotImplementedError("PlaywrightBackend uses custom_fetch, not httpx")
 
     #: Seconds to wait after the page load event for JS-rendered content
-    #: (Lucide icons, Careerfy cards, etc.) to appear.  Kept short — the
-    #: heavy lifting is done by the page's own scripts during load.
+    #: (Lucide icons, Careerfy cards, etc.) to appear.
     _JS_RENDER_WAIT_MS: int = 3000
+
+    #: Maximum seconds to wait for a Cloudflare Turnstile challenge to
+    #: auto-resolve.  Turnstile runs JavaScript checks and redirects
+    #: automatically for real browsers — we poll until the challenge
+    #: page disappears or this timeout is reached.
+    _TURNSTILE_RESOLVE_SECONDS: int = 45
+
+    #: Seconds between polls when waiting for Turnstile to resolve.
+    _TURNSTILE_POLL_INTERVAL: int = 3
+
+    # JavaScript stealth patches applied to every context.  These
+    # remove the most common bot-detection vectors without requiring
+    # the ``playwright-stealth`` package (which is async-only and
+    # adds a dependency).  Applied via ``add_init_script`` so they
+    # run before any page JS executes.
+    _STEALTH_JS = (
+        # Remove navigator.webdriver — the #1 detection signal.
+        "Object.defineProperty(navigator, 'webdriver', "
+        "{get: () => undefined});"
+        # Mock chrome.runtime to look like a real Chrome extension host.
+        "window.chrome = window.chrome || {};"
+        "window.chrome.runtime = window.chrome.runtime || "
+        "{connect: function(){}, sendMessage: function(){}};"
+        # Fake plugins array (empty but present — headless has none).
+        "Object.defineProperty(navigator, 'plugins', "
+        "{get: () => [1, 2, 3, 4, 5]});"
+        # Fake languages (headless defaults to empty).
+        "Object.defineProperty(navigator, 'languages', "
+        "{get: () => ['en-US', 'en']});"
+        # Remove the automation-controlled blink feature.
+        "const originalQuery = window.navigator.permissions.query;"
+        "window.navigator.permissions.query = (parameters) => "
+        "{return parameters.name === 'notifications' ? "
+        "Promise.resolve({state: Notification.permission}) : "
+        "originalQuery(parameters);};"
+    )
+
+    @classmethod
+    def _is_challenge_page(cls, page) -> bool:
+        """True when the current page is a Cloudflare challenge interstitial.
+
+        Checks the page title ("Just a moment...") and body content for
+        the challenge markers.  Does NOT use ``is_cloudflare_challenge``
+        from core.challenge to avoid importing the full scraper module.
+        """
+        try:
+            title = page.title().lower()
+            if "just a moment" in title:
+                return True
+            # Also check body for the challenge script markers.
+            body_text = page.evaluate("document.body.innerText")
+            lowered = body_text.lower()[:2000]
+            return "just a moment" in lowered or "challenges.cloudflare.com" in lowered
+        except Exception:  # noqa: BLE001 — page may have navigated away
+            return False
+
+    @classmethod
+    def _try_click_turnstile(cls, page) -> bool:
+        """Try to click a Cloudflare Turnstile checkbox iframe.
+
+        Turnstile renders inside an ``<iframe>`` with a checkbox.  If we
+        can find and click it, the challenge may resolve.  Returns True
+        if a click was attempted (not guaranteed to work).
+        """
+        try:
+            # Turnstile iframes have a specific src pattern.
+            turnstile_frame = page.frame_locator(
+                "iframe[src*='challenges.cloudflare.com']"
+            )
+            # The checkbox is usually a label or div inside the frame.
+            checkbox = turnstile_frame.locator(
+                "label, input[type='checkbox'], div[role='checkbox']"
+            ).first
+            if checkbox.is_visible(timeout=3000):
+                checkbox.click()
+                return True
+        except Exception:  # noqa: BLE001 — iframe may not exist
+            pass
+        return False
 
     @classmethod
     def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
         """Launch Chromium, navigate to URL, return rendered HTML.
 
-        Uses ``wait_until="load"`` instead of ``"networkidle"``: the load
-        event fires once all resources (scripts, stylesheets, images) are
-        fetched, which is sufficient for JS-rendered content.  ``networkidle"
-        never settles on sites with continuous analytics/tracking traffic
-        (e.g. ReporterJobs' Careerfy theme), causing 160s timeouts.
+        Anti-detection strategy (all free, no API keys):
 
-        After the load event, a brief wait lets client-side JS finish
-        rendering (Lucide icon replacement, Careerfy card injection, etc.).
+        1. **Stealth patches**: Remove ``navigator.webdriver``, mock
+           ``chrome.runtime``, fake plugins/languages — the most common
+           bot-detection signals.
+        2. **``wait_until="load"``** instead of ``"networkidle"``:
+           avoids 160s timeouts on sites with continuous AJAX.
+        3. **Turnstile auto-resolve**: After load, if the page is a
+           Cloudflare challenge ("Just a moment..."), poll for up to
+           45 seconds waiting for it to auto-resolve — Turnstile runs
+           JS checks and redirects automatically for real browsers.
+        4. **Turnstile checkbox click**: If auto-resolve doesn't work,
+           try clicking the Turnstile checkbox iframe.
         """
         try:
             from playwright.sync_api import sync_playwright
@@ -575,16 +658,44 @@ class PlaywrightBackend(CloudflareBackend):
                 viewport={"width": 1920, "height": 1080},
                 java_script_enabled=True,
             )
+            # Apply stealth patches before any page loads.
+            context.add_init_script(cls._STEALTH_JS)
             page = context.new_page()
             try:
-                # "load" waits for all resources (scripts, styles, images)
-                # to finish — sufficient for JS-rendered content.  Unlike
-                # "networkidle" it doesn't wait for analytics/tracking XHR
-                # to settle, so it works on sites with continuous AJAX.
                 page.goto(url, timeout=timeout_ms, wait_until="load")
-                # Brief pause for client-side JS to finish rendering
-                # (Lucide icons, Careerfy cards, lazy-loaded elements).
                 page.wait_for_timeout(cls._JS_RENDER_WAIT_MS)
+
+                # Check for Cloudflare challenge ("Just a moment...").
+                if cls._is_challenge_page(page):
+                    logger.info(
+                        "Playwright: Cloudflare challenge detected on %s — "
+                        "waiting up to %ds for auto-resolve",
+                        url, cls._TURNSTILE_RESOLVE_SECONDS,
+                    )
+                    resolved = False
+                    for i in range(
+                        cls._TURNSTILE_RESOLVE_SECONDS // cls._TURNSTILE_POLL_INTERVAL
+                    ):
+                        page.wait_for_timeout(cls._TURNSTILE_POLL_INTERVAL * 1000)
+                        if not cls._is_challenge_page(page):
+                            resolved = True
+                            logger.info(
+                                "Playwright: Turnstile resolved after ~%ds",
+                                (i + 1) * cls._TURNSTILE_POLL_INTERVAL,
+                            )
+                            break
+                        # Try clicking the Turnstile checkbox on the 2nd poll.
+                        if i == 1:
+                            cls._try_click_turnstile(page)
+
+                    if not resolved:
+                        # Last resort: try one more checkbox click, then give up.
+                        cls._try_click_turnstile(page)
+                        page.wait_for_timeout(2000)
+                        if cls._is_challenge_page(page):
+                            # Return None to let the rotation try the next backend.
+                            return None
+
                 html = page.content()
                 return html, 200
             finally:
