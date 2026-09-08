@@ -35,7 +35,7 @@ from bs4 import BeautifulSoup
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from core.models import SITE_LOG_MODELS, ScrapeLog, ScrapedItem, ScrapeStatus, Source
+from core.models import SITE_LOG_MODELS, NormalizedJob, ScrapeLog, ScrapedItem, ScrapeStatus, Source
 
 logger = logging.getLogger(__name__)
 # Sort key fallback for items without a published date (they sort last).
@@ -389,6 +389,114 @@ class BaseScraper(ABC):
         if dirty:
             ScrapedItem.objects.bulk_update(dirty, [fk])
 
+    # -- NormalizedJob: the source-agnostic export contract --
+
+    def _normalize_for_export(
+        self, item: dict, instance: ScrapedItem
+    ) -> dict:
+        """Map a scraped item to the NormalizedJob's enriched fields.
+
+        Subclasses override this to fill in source-specific data that isn't
+        part of the universal ``ScrapedItem`` contract (e.g. ``work_mode``,
+        ``experience_level``, ``sector_name``, ``skills``). The base
+        implementation returns an empty dict — the universal fields
+        (title, company, location, ...) come from ``ScrapedItem`` directly.
+
+        Args:
+            item: The in-memory normalized item dict (from ``normalize()``).
+            instance: The saved ``ScrapedItem`` DB row.
+
+        Returns:
+            Dict of NormalizedJob field overrides (key = field name,
+            value = the value to store). Unknown keys are ignored.
+        """
+        return {}
+
+    def _save_normalized_items(
+        self, pairs: list[tuple[dict, ScrapedItem]]
+    ) -> None:
+        """Write one NormalizedJob row per scraped item.
+
+        Called once per run by :meth:`save_items` after per-site detail rows
+        are saved. Each row merges the universal fields from ``ScrapedItem``
+        with source-specific overrides from :meth:`_normalize_for_export`.
+        """
+        if not pairs:
+            return
+
+        slug = self.source.slug
+        now = timezone.now()
+
+        rows: list[NormalizedJob] = []
+        for item, instance in pairs:
+            export_overrides = self._normalize_for_export(item, instance)
+            rows.append(
+                NormalizedJob(
+                    source_slug=slug,
+                    external_id=instance.external_id,
+                    # Universal fields from ScrapedItem.
+                    title=instance.title or item.get("title") or "",
+                    company=instance.company or item.get("company") or "",
+                    location=instance.location or item.get("location") or "",
+                    job_type=instance.job_type or "",
+                    url=instance.url or item.get("url") or "",
+                    published_at=instance.published_at,
+                    deadline=instance.deadline,
+                    deadline_is_default=getattr(
+                        instance, "deadline_is_default", False
+                    ),
+                    is_active=instance.is_active,
+                    content_hash=instance.content_hash,
+                    job_number=instance.job_number,
+                    numbered_on=instance.numbered_on,
+                    last_seen_at=now,
+                    # Enriched fields — overrides from the scraper subclass,
+                    # falling back to universal values.
+                    description=export_overrides.get(
+                        "description", item.get("description") or ""
+                    ),
+                    company_logo_url=export_overrides.get(
+                        "company_logo_url", ""
+                    ),
+                    work_mode=export_overrides.get(
+                        "work_mode", item.get("job_site") or ""
+                    ),
+                    salary=export_overrides.get(
+                        "salary", item.get("salary") or ""
+                    ),
+                    experience_level=export_overrides.get(
+                        "experience_level", ""
+                    ),
+                    sector_name=export_overrides.get(
+                        "sector_name", ""
+                    ),
+                    skills=export_overrides.get("skills", []),
+                    raw_payload=export_overrides.get(
+                        "raw_payload", item.get("raw_data") or {}
+                    ),
+                )
+            )
+
+        # Upsert: insert new rows, update existing ones on conflict.
+        NormalizedJob.objects.bulk_create(
+            rows,
+            update_conflicts=True,
+            unique_fields=["source_slug", "external_id"],
+            update_fields=[
+                f.name
+                for f in NormalizedJob._meta.concrete_fields
+                if f.name
+                not in (
+                    "id",
+                    "source_slug",
+                    "external_id",
+                    "created_at",
+                    "first_seen_at",
+                )
+            ]
+            + ["last_seen_at"],
+        )
+
     def record_detail_log(self, run: dict, day: date) -> str | None:
         """Append this run to the per-website day log; return its pk (or None).
 
@@ -679,6 +787,10 @@ class BaseScraper(ABC):
             self._save_details(detail_pairs)
         except Exception as exc:  # noqa: BLE001 - details must never kill the run
             errors.append(f"detail save failed for {len(detail_pairs)} item(s): {exc}")
+        try:
+            self._save_normalized_items(detail_pairs)
+        except Exception as exc:  # noqa: BLE001 - normalized export must never kill the run
+            errors.append(f"normalized export failed for {len(detail_pairs)} item(s): {exc}")
         return inserted, updated, skipped, errors
 
     def _bulk_insert_items(
