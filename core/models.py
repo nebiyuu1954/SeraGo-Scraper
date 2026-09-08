@@ -1161,6 +1161,139 @@ class CategoryStat(TimeStampedModel):
         return f"{self.category_type} {self.period_start} · {self.category_name} ×{self.count}"
 
 
+class NormalizedJob(TimeStampedModel):
+    """Source-agnostic normalized job listing — the universal contract.
+
+    Every scraper writes ONE row here after normalizing its raw fields into
+    this flat schema. The SeraGo .NET sync reads ONLY this table (instead of
+    the old 5-way LEFT JOIN across per-site models), so adding a new website
+    is a pure Python concern — zero C# changes needed.
+
+    Per-site raw data still lives in the per-site models (AfriworkJob, etc.)
+    for debugging and re-normalization. This table is the single source of
+    truth for the frontend.
+    """
+
+    source_slug = models.SlugField(
+        max_length=120,
+        db_index=True,
+        help_text="Source website slug, e.g. 'afriwork'.",
+    )
+    external_id = models.CharField(
+        max_length=255,
+        help_text="The source's own id for this listing (dedup key with source_slug).",
+    )
+
+    # -- Universal fields (always populated) --
+
+    title = models.CharField(max_length=500)
+    company = models.CharField(max_length=255, blank=True, default="")
+    location = models.CharField(max_length=255, blank=True, default="")
+    job_type = models.CharField(
+        max_length=32,
+        choices=JobType.choices,
+        blank=True,
+        default="",
+        help_text="FULL_TIME / PART_TIME / CONTRACT / ...",
+    )
+    url = models.URLField(max_length=1000, blank=True, default="")
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    deadline = models.DateTimeField(null=True, blank=True)
+    deadline_is_default = models.BooleanField(
+        default=False,
+        help_text="True when the source provided no deadline and the scraper defaulted.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="False once the listing disappears from the source.",
+    )
+
+    # -- Enriched fields (populated when the source provides them) --
+
+    description = models.TextField(
+        blank=True, default="",
+        help_text="HTML-stripped job description.",
+    )
+    company_logo_url = models.URLField(
+        max_length=1000, blank=True, default="",
+        help_text="Company logo URL from the source.",
+    )
+    work_mode = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="ONSITE / REMOTE / HYBRID (when the source provides it).",
+    )
+    salary = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Formatted salary text, e.g. '25,000 ETB monthly'.",
+    )
+    experience_level = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="Entry / Junior / Mid / Senior (when available).",
+    )
+    sector_name = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Raw sector/category name from the source.",
+    )
+    skills = models.JSONField(
+        default=list, blank=True,
+        help_text="Skill names, e.g. ['React', 'Node.js'].",
+    )
+
+    # -- Dedup + lifecycle --
+
+    content_hash = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="SHA-256 of title|company|location|job_type|url.",
+    )
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    # Per-day sequential numbering (mirrors ScrapedItem).
+    job_number = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Per-day sequential number (01, 02, ...).",
+    )
+    numbered_on = models.DateField(
+        null=True, blank=True,
+        help_text="Local day this item was numbered on.",
+    )
+
+    # Verbatim source payload for debugging / re-normalization.
+    raw_payload = models.JSONField(
+        default=dict, blank=True,
+        help_text="The source-specific detail row fields (raw).",
+    )
+
+    class Meta:
+        ordering = ["-numbered_on", "job_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source_slug", "external_id"],
+                name="uniq_norm_source_external_id",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["source_slug", "is_active"],
+                name="norm_src_active_idx",
+            ),
+            # The .NET incremental sync pulls rows WHERE updated_at > watermark.
+            models.Index(
+                fields=["updated_at"],
+                name="norm_updated_at_idx",
+            ),
+        ]
+
+    @property
+    def job_number_display(self) -> str:
+        """Zero-padded job number, e.g. '01', '12' — or a dash when unnumbered."""
+        return f"{self.job_number:02d}" if self.job_number else "—"
+
+    def __str__(self):
+        return f"{self.job_number_display} · [{self.source_slug}] {self.title}"
+
+
 # Registry of per-website log models (ONE record per source+day each). The
 # master ``ScrapeLog`` references each website's own log row (``table`` +
 # ``log_id``) so you can drill from the summary into the full detail.
