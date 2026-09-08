@@ -161,3 +161,99 @@ class HaHuJobsScraper(GraphQLScraper):
         )
         if instance.hahujobs_job_id != hahu.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(hahujobs_job=hahu)
+
+    # -- NormalizedJob export --
+
+    def _normalize_for_export(self, item: dict, instance: 'ScrapedItem') -> dict:
+        """HaHuJobs-specific enrichment for NormalizedJob.
+
+        Provides: salary (decimal -> string), experience_level (years -> band),
+        sector_name, company_logo_url (entity.logo), and a structured
+        description synthesized from the summary + application fields.
+        """
+        raw = item.get("raw_data") or {}
+        entity = raw.get("entity") or {}
+        sub_sector = raw.get("sub_sector") or {}
+        sector = sub_sector.get("sector") or {}
+
+        # Experience band from years_of_experience.
+        exp = raw.get("years_of_experience")
+        experience_level = ""
+        if exp is not None:
+            try:
+                years = float(exp)
+                if years < 1:
+                    experience_level = "Entry"
+                elif years < 3:
+                    experience_level = "Junior"
+                elif years < 5:
+                    experience_level = "Mid"
+                else:
+                    experience_level = "Senior"
+            except (TypeError, ValueError):
+                pass
+
+        # Salary: HaHuJobs provides a Decimal field.
+        salary = ""
+        raw_salary = item.get("salary") or raw.get("salary")
+        if raw_salary:
+            try:
+                salary = f"{float(raw_salary):,.0f} ETB monthly"
+            except (TypeError, ValueError):
+                salary = str(raw_salary)
+
+        # Build a structured description from the summary + application fields.
+        description = self._build_description(item, raw)
+
+        return {
+            "description": description,
+            "salary": salary,
+            "experience_level": experience_level,
+            "sector_name": sector.get("name") or "",
+            "company_logo_url": entity.get("logo") or "",
+            "work_mode": "",  # HaHuJobs doesn't provide work mode
+            "skills": [],  # HaHuJobs doesn't expose skills as a separate field
+            "raw_payload": raw,
+        }
+
+    @staticmethod
+    def _build_description(item: dict, raw: dict) -> str:
+        """Build a structured description from summary + application fields.
+
+        HaHuJobs' ``summary`` field is a short 1-2 paragraph text without
+        section headings.  We wrap it in an "About this job" heading so the
+        frontend parser gives it a proper section icon, and synthesize a
+        "How to apply" section from the application_method / application_url /
+        application_email fields the GraphQL query already fetches.
+        """
+        summary = item.get("description") or ""
+        parts: list[str] = []
+
+        # Wrap the summary under a heading so the frontend parser treats it
+        # as a proper section (not a bare intro paragraph).
+        if summary.strip():
+            parts.append("About this job")
+            parts.append("")
+            parts.append(summary.strip())
+
+        # Synthesize "How to apply" from the application fields.
+        apply_lines: list[str] = []
+        app_method = (raw.get("application_method") or "").strip()
+        app_url = (raw.get("application_url") or "").strip()
+        app_email = (raw.get("application_email") or "").strip()
+
+        if app_method:
+            apply_lines.append(app_method)
+        if app_url:
+            apply_lines.append(f"Apply online: {app_url}")
+        if app_email:
+            apply_lines.append(f"Email: {app_email}")
+
+        if apply_lines:
+            if parts:
+                parts.append("")
+            parts.append("How to apply")
+            parts.append("")
+            parts.extend(apply_lines)
+
+        return "\n".join(parts)
