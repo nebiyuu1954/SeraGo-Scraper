@@ -270,3 +270,88 @@ class GeezJobsScraper(HtmlScraper):
         )
         if instance.geezjobs_job_id != geez.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(geezjobs_job=geez)
+
+    # -- NormalizedJob export --
+
+    def _normalize_for_export(self, item: dict, instance: 'ScrapedItem') -> dict:
+        """GeezJobs-specific enrichment for NormalizedJob.
+
+        Provides: company_logo_url, experience_level (from years),
+        and a synthesized description from card-level fields so the
+        frontend has structured content to render instead of an empty string.
+        """
+        raw = item.get("raw_data") or {}
+        exp_years = raw.get("min_experience_years")
+        experience_level = ""
+        if exp_years is not None:
+            try:
+                years = float(exp_years)
+                if years < 1:
+                    experience_level = "Entry"
+                elif years < 3:
+                    experience_level = "Junior"
+                elif years < 5:
+                    experience_level = "Mid"
+                else:
+                    experience_level = "Senior"
+            except (TypeError, ValueError):
+                pass
+
+        logo = raw.get("logo") or ""
+
+        # GeezJobs has no detail page — synthesize a structured description
+        # from card-level fields so the frontend parser has sections to render.
+        description = self._build_description(item, raw, experience_level)
+
+        return {
+            "description": description,
+            "company_logo_url": logo,
+            "experience_level": experience_level,
+            "work_mode": "",
+            "salary": "",
+            "sector_name": "",
+            "skills": [],
+            "raw_payload": raw,
+        }
+
+    @staticmethod
+    def _build_description(
+        item: dict, raw: dict, experience_level: str
+    ) -> str:
+        """Build a structured description from card-level fields.
+
+        GeezJobs only exposes listing cards (no detail page), so we
+        synthesize a description that the frontend's section parser can
+        split into labeled sections — matching the format of sources that
+        provide full descriptions.
+        """
+        lines: list[str] = []
+        lines.append("About this job")
+        lines.append("")
+
+        company = item.get("company") or ""
+        if company:
+            lines.append(f"Company: {company}")
+
+        location = item.get("location") or ""
+        if location:
+            lines.append(f"Location: {location}")
+
+        employment = raw.get("employment_text") or ""
+        if employment:
+            lines.append(f"Employment type: {employment}")
+
+        experience_text = raw.get("experience_text") or ""
+        if experience_text:
+            lines.append(f"Experience: {experience_text}")
+        elif experience_level:
+            lines.append(f"Experience level: {experience_level}")
+
+        deadline_text = raw.get("deadline_text") or ""
+        if deadline_text:
+            lines.append(f"Deadline: {deadline_text}")
+
+        # Keep at least the company/location lines even if both are empty.
+        if len(lines) <= 2:
+            return ""
+        return "\n".join(lines)
