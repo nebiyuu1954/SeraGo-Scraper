@@ -262,3 +262,64 @@ class ReporterJobsScraper(HtmlScraper):
         )
         if instance.reporter_job_id != reporter.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(reporter_job=reporter)
+
+    # -- NormalizedJob export --
+
+    def _normalize_for_export(self, item: dict, instance: 'ScrapedItem') -> dict:
+        """ReporterJobs-specific enrichment for NormalizedJob.
+
+        Minimal source: no description, no salary, no work mode, no sector,
+        no experience, no skills, no deadline (theme disabled).
+        Synthesizes a card-level description so the frontend has content
+        to render instead of an empty string.
+        """
+        raw = item.get("raw_data") or {}
+
+        # ReporterJobs has no detail page — synthesize a structured description
+        # from card-level fields so the frontend parser has sections to render.
+        description = self._build_description(item, raw)
+
+        return {
+            "description": description,
+            "company_logo_url": "",
+            "experience_level": "",
+            "work_mode": "",
+            "salary": "",
+            "sector_name": "",
+            "skills": [],
+            "raw_payload": raw,
+        }
+
+    @staticmethod
+    def _build_description(item: dict, raw: dict) -> str:
+        """Build a structured description from card-level fields.
+
+        ReporterJobs only exposes listing cards (no detail page), so we
+        synthesize a description that the frontend's section parser can
+        split into labeled sections — matching the format of sources that
+        provide full descriptions.
+        """
+        lines: list[str] = []
+        lines.append("About this job")
+        lines.append("")
+
+        company = item.get("company") or ""
+        if company:
+            lines.append(f"Company: {company}")
+
+        location = item.get("location") or ""
+        if location:
+            lines.append(f"Location: {location}")
+
+        job_type_text = raw.get("job_type_text") or ""
+        if job_type_text:
+            lines.append(f"Employment type: {job_type_text}")
+
+        posted_text = raw.get("posted_text") or ""
+        if posted_text:
+            lines.append(f"Posted: {posted_text}")
+
+        # Keep at least the company/location lines even if both are empty.
+        if len(lines) <= 2:
+            return ""
+        return "\n".join(lines)
