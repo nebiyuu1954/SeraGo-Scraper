@@ -258,3 +258,25 @@ class AfriworkJobsScraper(GraphQLScraper):
         if not items:
             return True
         return all(not self._is_today_item(i) for i in items)
+
+    # -- NormalizedJob export --
+
+    def _normalize_for_export(self, item: dict, instance: 'ScrapedItem') -> dict:
+        """Afriwork-specific enrichment for NormalizedJob.
+
+        Provides: work_mode (job_site), experience_level, sector_name,
+        skills, salary (already formatted by normalize()).
+        """
+        raw = item.get("raw_data") or {}
+        entity = raw.get("entity") or {}
+        return {
+            "work_mode": raw.get("job_site") or "",
+            "experience_level": raw.get("experience_level") or "",
+            "sector_name": (item.get("sectors") or raw.get("sectors") or [""])[0]
+                if isinstance(item.get("sectors") or raw.get("sectors"), list)
+                else item.get("sector_name") or "",
+            "skills": self._nested_names(raw, "skill_requirements"),
+            "salary": item.get("salary") or "",
+            "company_logo_url": "",  # Afriwork API doesn't expose logos
+            "raw_payload": raw,
+        }
