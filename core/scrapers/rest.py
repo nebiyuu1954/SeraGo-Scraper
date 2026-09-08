@@ -176,3 +176,28 @@ class RestJsonScraper(BaseScraper):
         )
         if instance.ethiojobs_job_id != ethiojobs.pk:
             ScrapedItem.objects.filter(pk=instance.pk).update(ethiojobs_job=ethiojobs)
+
+    # -- NormalizedJob export --
+
+    def _normalize_for_export(self, item: dict, instance: 'ScrapedItem') -> dict:
+        """EthioJobs-specific enrichment for NormalizedJob.
+
+        Provides: work_mode (location_type), company_logo_url (company.logo),
+        sector_name (catalogs[0].name). No salary, no experience, no skills.
+        """
+        raw = item.get("raw_data") or {}
+        company = raw.get("company") or {}
+        catalogs = raw.get("catalogs") or []
+        sector_name = ""
+        if catalogs and isinstance(catalogs, list) and isinstance(catalogs[0], dict):
+            sector_name = catalogs[0].get("name") or ""
+
+        return {
+            "work_mode": raw.get("location_type") or "",
+            "company_logo_url": company.get("logo") or "",
+            "sector_name": sector_name,
+            "experience_level": "",
+            "salary": "",
+            "skills": [],
+            "raw_payload": raw,
+        }
