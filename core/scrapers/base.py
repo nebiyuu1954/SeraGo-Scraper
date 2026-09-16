@@ -493,8 +493,7 @@ class BaseScraper(ABC):
                     "created_at",
                     "first_seen_at",
                 )
-            ]
-            + ["last_seen_at"],
+            ],
         )
 
     def record_detail_log(self, run: dict, day: date) -> str | None:
