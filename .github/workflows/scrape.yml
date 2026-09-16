@@ -83,19 +83,47 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Cache Playwright browser
+      - name: Resolve Playwright browser versions
+        id: pw
+        # The browser download is keyed on the INSTALLED package versions.
+        # Both packages are unpinned and each expects its OWN Chromium revision
+        # (playwright 1.6x -> 1234, rebrowser-playwright 1.52 -> 1169), so a
+        # static cache key let the cached browser drift away from the revision
+        # the code actually launches. GeezJobs then failed on EVERY run from
+        # 2026-08-21 onward with "BrowserType.launch: Executable doesn't exist
+        # at .../chromium_headless_shell-1169/...", which marked every day's
+        # master ScrapeLog as failed.
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from importlib.metadata import PackageNotFoundError, version
+
+          parts = []
+          for pkg in ("playwright", "rebrowser-playwright"):
+              try:
+                  parts.append(f"{pkg}-{version(pkg)}")
+              except PackageNotFoundError:
+                  parts.append(f"{pkg}-none")
+          print("key=" + "_".join(parts).replace(".", "-"))
+          PY
+
+      - name: Cache Playwright browsers
         uses: actions/cache@v4
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-chromium
-
-      - name: Install Playwright
-        run: pip install playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.key }}
 
       - name: Install Chromium for Playwright
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium --with-deps
+        # BOTH browsers must be present: the scraper prefers rebrowser_playwright
+        # and falls back to plain playwright (core/cloudflare_backends.py:641).
+        # Installing only `playwright`'s browser is what broke GeezJobs — the
+        # preferred package then has no revision it can launch.
+        run: |
+          if pip show rebrowser-playwright >/dev/null 2>&1; then
+            rebrowser_playwright install chromium --with-deps
+          fi
+          playwright install chromium --with-deps
 
       - name: Apply migrations
         run: python manage.py migrate
