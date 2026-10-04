@@ -153,12 +153,21 @@ class Command(BaseCommand):
             logger.exception("Could not update scrape stats")
 
         failed = [slug for slug, outcome in results.items() if outcome != "success"]
+        sources_by_slug = {s.slug: s for s in sources}
+        stable_failed = [slug for slug in failed if getattr(sources_by_slug.get(slug), "is_stable", True)]
+        
         if failed:
             self.stdout.write(
                 self.style.ERROR(f"{len(failed)} source(s) failed: {', '.join(failed)}")
             )
+            
+        if stable_failed:
             raise SystemExit(1)
-        self.stdout.write(self.style.SUCCESS("All sources scraped successfully."))
+            
+        if not failed:
+            self.stdout.write(self.style.SUCCESS("All sources scraped successfully."))
+        else:
+            self.stdout.write(self.style.SUCCESS("Sweep completed (stable sources succeeded)."))
 
     # ------------------------------------------------------------------
     # Per-sweep summary (the master's short ``runs`` list)
@@ -213,7 +222,8 @@ class Command(BaseCommand):
         """
         try:
             total_hits = total_found = total_inserted = total_updated = total_skipped = 0
-            statuses: list[str] = []
+            stable_statuses: list[str] = []
+            unstable_statuses: list[str] = []
             started_at: str | None = None
             for source in sources:
                 outcome = results.get(source.slug, "failed")
@@ -228,13 +238,24 @@ class Command(BaseCommand):
                     total_inserted += site_run.get("items_inserted", 0)
                     total_updated += site_run.get("items_updated", 0)
                     total_skipped += site_run.get("items_skipped", 0)
-                    statuses.append(site_run.get("status") or self._outcome_status(outcome))
+                    
+                    status = site_run.get("status") or self._outcome_status(outcome)
+                    if getattr(source, "is_stable", True):
+                        stable_statuses.append(status)
+                    else:
+                        unstable_statuses.append(status)
+                    
                     ts = site_run.get("started_at")
                     if ts and (started_at is None or ts < started_at):
                         started_at = ts
                 else:
-                    statuses.append(self._outcome_status(outcome))
-            if not statuses:
+                    status = self._outcome_status(outcome)
+                    if getattr(source, "is_stable", True):
+                        stable_statuses.append(status)
+                    else:
+                        unstable_statuses.append(status)
+                        
+            if not stable_statuses and not unstable_statuses:
                 return
             if master is None:
                 # No site logged (all mocked, or every run crashed before
@@ -249,7 +270,8 @@ class Command(BaseCommand):
                     "inserted": total_inserted,
                     "updated": total_updated,
                     "skipped": total_skipped,
-                    "status": self._worst_status(*statuses),
+                    "status": self._worst_status(*stable_statuses) if stable_statuses else ScrapeStatus.SUCCESS,
+                    "unstable_status": self._worst_status(*unstable_statuses) if unstable_statuses else ScrapeStatus.SUCCESS,
                 }
             )
             master.save(update_fields=["runs", "updated_at"])
