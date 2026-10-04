@@ -81,7 +81,8 @@ JINA_BASE_URL = "https://r.jina.ai"
 # service, subclass ``CloudflareBackend`` in cloudflare_backends.py
 # (no other files need to change).
 from core.cloudflare_backends import (
-    DEFAULT_ROTATION_ORDER as CLOUDFLARE_ROTATION_ORDER,
+    STABLE_ROTATION_ORDER,
+    UNSTABLE_ROTATION_ORDER,
     RELAY_ROTATION_ORDER,
     CloudflareBackend,
     all_backends,
@@ -469,7 +470,10 @@ class HtmlScraper(BaseScraper):
         _relay_failures: list[tuple[str, Exception]] = []
         last_error: Exception | None = None
 
-        for service in CLOUDFLARE_ROTATION_ORDER:
+        # Pick rotation strategy based on stability
+        rotation_order = STABLE_ROTATION_ORDER if getattr(self.source, 'is_stable', False) else UNSTABLE_ROTATION_ORDER
+        
+        for service in rotation_order:
             if service in broken:
                 logger.debug("Cloudflare rotate: skipping %s for %s (known broken)", service, source_slug)
                 continue
