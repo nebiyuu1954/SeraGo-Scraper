@@ -1089,15 +1089,16 @@ class BaseScraper(ABC):
             bucket["log_id"] = str(site_log.pk)
             bucket["status"] = site_log.status
 
-        # The master status is the worst across each website's LATEST run — a
-        # site whose most recent scrape failed still fails the day even when
-        # other sites recovered later. Recomputed from the buckets on every
-        # run, so an early failure clears as soon as every site has since
-        # succeeded (the user-facing rule: the day is "success" when the last
-        # scrape of the day got everything).
-        master.status = self._worst_status(
-            *(bucket.get("status") for bucket in master.websites)
-        )
+        # The master status splits into stable and unstable/flaky.
+        # Stable sites determine `status`, flaky sites determine `unstable_status`.
+        # We look at the LATEST run for each bucket.
+        stable_slugs = set(Source.objects.filter(is_stable=True).values_list("slug", flat=True))
+        
+        stable_statuses = [bucket.get("status") for bucket in master.websites if bucket.get("source") in stable_slugs]
+        unstable_statuses = [bucket.get("status") for bucket in master.websites if bucket.get("source") not in stable_slugs]
+        
+        master.status = self._worst_status(*stable_statuses) if stable_statuses else ScrapeStatus.SUCCESS
+        master.unstable_status = self._worst_status(*unstable_statuses) if unstable_statuses else ScrapeStatus.SUCCESS
 
         master.save()
         return master
