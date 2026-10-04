@@ -62,10 +62,70 @@ class RestJsonScraper(BaseScraper):
         params[pagination.get("limit_key", "limit")] = page_size
         return params
 
+    def _fetch_fresh_token(self) -> str:
+        """Fetch a fresh JWT token from the EthioJobs homepage HTML."""
+        import re
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            response = request_with_retry(
+                httpx.get,
+                url="https://ethiojobs.net/jobs",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=10.0,
+                retries=2
+            )
+            response.raise_for_status()
+            tokens = re.findall(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', response.text)
+            if tokens:
+                return tokens[0]
+        except Exception:
+            logger.warning("Direct token fetch failed, trying relay backends")
+
+        from core.cloudflare_backends import get_backend, STABLE_ROTATION_ORDER, UNSTABLE_ROTATION_ORDER
+        rotation = STABLE_ROTATION_ORDER if getattr(self.source, 'is_stable', False) else UNSTABLE_ROTATION_ORDER
+        
+        for name in rotation:
+            backend_cls = get_backend(name)
+            if not backend_cls:
+                continue
+            if not backend_cls.get_api_key() and getattr(backend_cls, "credits_per_request", 1) > 0:
+                continue
+            try:
+                res = backend_cls.custom_fetch("https://ethiojobs.net/jobs", timeout=20.0)
+                if res:
+                    html, _ = res
+                else:
+                    kwargs = backend_cls.build_request_kwargs("https://ethiojobs.net/jobs")
+                    method = kwargs.pop("method", "GET")
+                    url = kwargs.pop("url")
+                    resp = httpx.request(method, url, **kwargs)
+                    html, _ = backend_cls.parse_response(resp, "https://ethiojobs.net/jobs")
+                
+                tokens = re.findall(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', html)
+                if tokens:
+                    logger.info("EthioJobs token fetched via %s", name)
+                    return tokens[0]
+            except Exception:
+                continue
+                
+        logger.error("Could not fetch EthioJobs token from any source")
+        return ""
+
     def _request_headers(self) -> dict:
         """Source headers plus the JWT token when configured in settings."""
         headers = {"Content-Type": "application/json", **(self.source.headers or {})}
-        token = getattr(settings, "ETHIOJOBS_TOKEN", "") or ""
+        
+        # Auto-fetch token if this is ethiojobs
+        token = ""
+        if "ethiojobs" in self.source.endpoint:
+            if not hasattr(self, '_auto_token') or not self._auto_token:
+                self._auto_token = self._fetch_fresh_token()
+            token = self._auto_token
+        else:
+            token = getattr(settings, "ETHIOJOBS_TOKEN", "") or ""
+            
         if token:
             headers["x-custom-header"] = token
         return headers
