@@ -93,6 +93,7 @@ class ScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("status", "day")
     date_hierarchy = "day"
+    exclude = ("websites", "runs")
     readonly_fields = (
         "id",
         "day",
@@ -105,6 +106,7 @@ class ScrapeLogAdmin(admin.ModelAdmin):
         "items_updated",
         "items_skipped",
         "websites_pretty",
+        "runs_pretty",
         "created_at",
         "updated_at",
     )
@@ -128,6 +130,10 @@ class ScrapeLogAdmin(admin.ModelAdmin):
     @admin.display(description="Websites (JSON)")
     def websites_pretty(self, obj):
         return format_html("<pre>{}</pre>", json.dumps(obj.websites, indent=2, default=str))
+
+    @admin.display(description="Runs (JSON)")
+    def runs_pretty(self, obj):
+        return format_html("<pre>{}</pre>", json.dumps(obj.runs, indent=2, default=str))
 
 
 @admin.register(ScrapeStat)
@@ -217,6 +223,7 @@ class AfriworkScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("day", "source", "status")
     date_hierarchy = "day"
+    exclude = ("scraped_log",)
     readonly_fields = (
         "id",
         "source",
@@ -284,6 +291,7 @@ class EthioJobsScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("day", "source", "status")
     date_hierarchy = "day"
+    exclude = ("scraped_log",)
     readonly_fields = (
         "id",
         "source",
@@ -331,6 +339,7 @@ class HaHuScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("day", "source", "status")
     date_hierarchy = "day"
+    exclude = ("scraped_log",)
     readonly_fields = (
         "id",
         "source",
@@ -432,6 +441,7 @@ class GeezScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("day", "source", "status")
     date_hierarchy = "day"
+    exclude = ("scraped_log",)
     readonly_fields = (
         "id",
         "source",
@@ -498,6 +508,7 @@ class ReporterScrapeLogAdmin(admin.ModelAdmin):
     )
     list_filter = ("day", "source", "status")
     date_hierarchy = "day"
+    exclude = ("scraped_log",)
     readonly_fields = (
         "id",
         "source",
