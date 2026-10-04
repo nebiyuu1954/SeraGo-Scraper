@@ -105,6 +105,10 @@ class Source(TimeStampedModel):
             "from_var/to_var names); the query decides how the bounds apply."
         ),
     )
+    is_stable = models.BooleanField(
+        default=True,
+        help_text="If false, failures from this source will not cause the master day log or sweep to be marked as failed.",
+    )
     last_scraped_at = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
 
@@ -320,7 +324,13 @@ class ScrapeLog(TimeStampedModel):
         max_length=16,
         choices=ScrapeStatus.choices,
         default=ScrapeStatus.SUCCESS,
-        help_text="Worst status across the day's runs.",
+        help_text="Worst status across the day's stable runs.",
+    )
+    unstable_status = models.CharField(
+        max_length=16,
+        choices=ScrapeStatus.choices,
+        default=ScrapeStatus.SUCCESS,
+        help_text="Worst status across the day's unstable/flaky runs.",
     )
     run_count = models.PositiveIntegerField(default=0, help_text="Total scrape runs across all websites this day.")
     api_hits = models.PositiveIntegerField(default=0, help_text="Total API requests across all websites this day.")
