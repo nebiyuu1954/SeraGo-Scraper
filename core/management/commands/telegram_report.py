@@ -169,11 +169,12 @@ class Command(BaseCommand):
             )
 
         issues = api_issues_for_day(day)
-        has_issues = bool(issues) or master.status != ScrapeStatus.SUCCESS
-        status_icon = "✅" if master.status == ScrapeStatus.SUCCESS else "⚠️"
+        has_issues = bool(issues) or master.status != ScrapeStatus.SUCCESS or master.unstable_status != ScrapeStatus.SUCCESS
+        status_icon = "✅" if master.status == ScrapeStatus.SUCCESS else "🔴"
+        unstable_icon = "✅" if getattr(master, "unstable_status", ScrapeStatus.SUCCESS) == ScrapeStatus.SUCCESS else "⚠️"
 
         lines = [
-            f"📈 status  : {status_icon} {master.status.upper()}",
+            f"{status_icon} STABLE: {master.status.upper()} | {unstable_icon} UNSTABLE: {getattr(master, 'unstable_status', ScrapeStatus.SUCCESS).upper()}",
             f"   runs    : {master.run_count}   · websites: {master.websites_count}   · api hits: {master.api_hits}",
             f"   found   : {master.items_found}   · inserted: {master.items_inserted}   · updated: {master.items_updated}   · skipped: {master.items_skipped}",
         ]
@@ -195,16 +196,38 @@ class Command(BaseCommand):
 
         websites = master.websites or []
         if websites:
+            from core.models import Source
+            stable_slugs = set(Source.objects.filter(is_stable=True).values_list("slug", flat=True))
+            
+            stable_websites = [w for w in websites if w.get("source") in stable_slugs]
+            unstable_websites = [w for w in websites if w.get("source") not in stable_slugs]
+            
             lines.append("")
             lines.append("🌐 Websites")
-            for w in websites:
-                name = w.get("name") or w.get("source") or ""
-                wicon = "✅" if w.get("status") == ScrapeStatus.SUCCESS else "⚠️"
-                lines.append(f"{wicon} {name}")
-                lines.append(
-                    f"=> api {w.get('api_hits', 0)} · found {w.get('items_found', 0)} · "
-                    f"inserted {w.get('items_inserted', 0)} · skipped {w.get('items_skipped', 0)}"
-                )
+            
+            if stable_websites:
+                lines.append("[STABLE]")
+                for w in stable_websites:
+                    name = w.get("name") or w.get("source") or ""
+                    wicon = "✅" if w.get("status") == ScrapeStatus.SUCCESS else "⚠️"
+                    lines.append(f"{wicon} {name}")
+                    lines.append(
+                        f"  => api {w.get('api_hits', 0)} · found {w.get('items_found', 0)} · "
+                        f"inserted {w.get('items_inserted', 0)} · skipped {w.get('items_skipped', 0)}"
+                    )
+                    
+            if unstable_websites:
+                if stable_websites:
+                    lines.append("")
+                lines.append("[UNSTABLE]")
+                for w in unstable_websites:
+                    name = w.get("name") or w.get("source") or ""
+                    wicon = "✅" if w.get("status") == ScrapeStatus.SUCCESS else "❌" if w.get("status") == ScrapeStatus.FAILED else "⚠️"
+                    lines.append(f"{wicon} {name}")
+                    lines.append(
+                        f"  => api {w.get('api_hits', 0)} · found {w.get('items_found', 0)} · "
+                        f"inserted {w.get('items_inserted', 0)} · skipped {w.get('items_skipped', 0)}"
+                    )
 
         if issues:
             lines.append("")
