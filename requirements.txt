@@ -26,3 +26,9 @@ whitenoise>=6.6
 # Cloudflare sites (GeezJobs).
 rebrowser-playwright>=1.50
 playwright>=1.40
+
+# Error Tracking
+sentry-sdk[django]>=2.0
+
+# TLS fingerprint impersonation (Cloudflare bypass without a browser)
+curl_cffi>=0.7
