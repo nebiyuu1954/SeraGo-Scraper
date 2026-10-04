@@ -138,34 +138,35 @@ def backend_settings(name: str) -> dict[str, Any]:
     }
 
 
-# ------------------------------------------------------------------
-# Default rotation order (cheapest first)
-# ------------------------------------------------------------------
+# For unstable sites: Try local bypasses FIRST (0 credits), then fall back to paid APIs
+# For unstable sites: Try local bypasses FIRST (0 credits), then fall back to paid APIs
+UNSTABLE_ROTATION_ORDER: tuple[str, ...] = (
+    "curl_cffi",     # Instant local TLS spoof (0 credits)
+    "playwright",    # Real local browser (0 credits)
+    "scrapedo_one", "scrapedo_two", "scrapedo_three",
+    "zenrows_one", "zenrows_two", "zenrows_three",
+    "scraperapi_one", "scraperapi_two", "scraperapi_three",
+    "scrapfly_one", "scrapfly_two", "scrapfly_three",
+)
 
-DEFAULT_ROTATION_ORDER: tuple[str, ...] = (
-    # Scrape.do first — cheapest API backend (1 credit/req, 1,000 free/mo)
-    # and can bypass Cloudflare Turnstile.  Playwright is last because
-    # Turnstile blocks headless browsers from datacenter IPs.
-    "scrapedo",
-    "scrapebadger",
-    "zenrows",
-    "scraperapi",
-    "scrapfly",
+# For stable sites: ONLY use local bypasses. Never burn credits.
+STABLE_ROTATION_ORDER: tuple[str, ...] = (
+    "curl_cffi",
     "playwright",
 )
 
 # Relay rotation order for reader-relay sources (e.g. GeezJobs).
-# Free backends first (Firecrawl, Jina, Scrape.do, ScrapeBadger), then
+# Free backends first (Firecrawl, Jina), then
 # Playwright (free but slower — real browser), then paid backends.
 RELAY_ROTATION_ORDER: tuple[str, ...] = (
     "playwright",
     "firecrawl",
     "jina",
-    "scrapedo",
-    "scrapebadger",
-    "zenrows",
-    "scraperapi",
-    "scrapfly",
+    "curl_cffi",
+    "scrapedo_one", "scrapedo_two", "scrapedo_three",
+    "zenrows_one", "zenrows_two", "zenrows_three",
+    "scraperapi_one", "scraperapi_two", "scraperapi_three",
+    "scrapfly_one", "scrapfly_two", "scrapfly_three",
 )
 
 
@@ -180,7 +181,7 @@ class ScrapeDoBackend(CloudflareBackend):
     ``render=true`` executes JS.  Response is raw HTML (200 = success).
     """
 
-    name = "scrapedo"
+    name = ""
     api_url = "https://api.scrape.do/"
     env_key = "SCRAPE_DO_API_KEY"
     credits_per_request = 1
@@ -203,56 +204,6 @@ class ScrapeDoBackend(CloudflareBackend):
         return _extract_raw_html(response, "Scrape.do", url)
 
 
-class ScrapeBadgerBackend(CloudflareBackend):
-    """ScrapeBadger — 1-3 credits/req. Free: 1,000/mo.
-
-    POST endpoint.  Response is JSON ``{"content": "<html>"}``.
-    """
-
-    name = "scrapebadger"
-    api_url = "https://scrapebadger.com/v1/web/scrape"
-    env_key = "SCRAPEBADGER_API_KEY"
-    credits_per_request = 2
-    monthly_free_credits = 1000
-    dashboard_url = "https://scrapebadger.com/dashboard"
-    tier_description = "1-3 credits/req, 1,000 free/mo"
-
-    @classmethod
-    def build_request_kwargs(cls, url: str) -> dict[str, Any]:
-        return {
-            "method": "POST",
-            "url": cls.api_url,
-            "timeout": cls.timeout,
-            "json": {"url": url, "format": "html"},
-            "headers": {"x-api-key": cls.get_api_key(), "Content-Type": "application/json"},
-        }
-
-    @classmethod
-    def parse_response(cls, response: httpx.Response, url: str) -> tuple[str, int]:
-        _check_auth_errors(response, "ScrapeBadger", method="POST")
-        try:
-            payload = response.json()
-        except ValueError:
-            raise httpx.HTTPStatusError(
-                "ScrapeBadger returned a non-JSON body",
-                request=httpx.Request("POST", cls.api_url),
-                response=response,
-            )
-        content = payload.get("content") or ""
-        if not content:
-            raise httpx.HTTPStatusError(
-                "ScrapeBadger returned empty content",
-                request=httpx.Request("POST", cls.api_url),
-                response=response,
-            )
-        from core.challenge import is_cloudflare_challenge
-        if is_cloudflare_challenge(content):
-            from core.challenge import CloudflareChallengeError
-            raise CloudflareChallengeError(f"Cloudflare challenge page returned for {url}")
-        target_status = payload.get("status_code") or response.status_code
-        return content, target_status
-
-
 class ZenRowsBackend(CloudflareBackend):
     """ZenRows — 25 credits/req but 5,000 free/mo (200 requests).
 
@@ -260,7 +211,7 @@ class ZenRowsBackend(CloudflareBackend):
     Response is raw HTML (200 = success).
     """
 
-    name = "zenrows"
+    name = ""
     api_url = "https://api.zenrows.com/v1/"
     env_key = "ZENROWS_API_KEY"
     timeout = 120.0
@@ -290,7 +241,7 @@ class ScraperAPIBackend(CloudflareBackend):
     ``render=true`` executes JS.  Response is raw HTML (200 = success).
     """
 
-    name = "scraperapi"
+    name = ""
     api_url = "https://api.scraperapi.com"
     env_key = "SCRAPERAPI_KEY"
     credits_per_request = 25
@@ -320,7 +271,7 @@ class ScrapFlyBackend(CloudflareBackend):
     envelope with ``result.content`` + ``result.status_code``.
     """
 
-    name = "scrapfly"
+    name = ""
     api_url = "https://api.scrapfly.io/scrape"
     env_key = "SCRAPFLY_API_KEY"
     timeout = 160.0
@@ -489,6 +440,92 @@ class FirecrawlBackend(CloudflareBackend):
 
 
 # ------------------------------------------------------------------
+# curl_cffi backend (free TLS fingerprint impersonation, no API key)
+# ------------------------------------------------------------------
+
+
+class CurlCffiBackend(CloudflareBackend):
+    """curl_cffi — TLS fingerprint impersonation (free, no API key).
+
+    Makes HTTP requests that look identical to a real Chrome browser at
+    the TLS/JA3 level.  Bypasses Cloudflare's fingerprint-based blocking
+    without launching a heavyweight browser.  Cannot execute JavaScript,
+    so Turnstile challenges still need the Playwright fallback.
+
+    Free tier: unlimited — it's a local library, no API key needed.
+    """
+
+    name = "curl_cffi"
+    api_url = ""          # Local library, no API
+    env_key = ""          # No API key needed
+    timeout = 30.0
+    credits_per_request = 0  # Free!
+    monthly_free_credits = 999_999
+    dashboard_url = "https://github.com/lexiforest/curl_cffi"
+    tier_description = "0 credits/req, unlimited (local TLS impersonation)"
+
+    @classmethod
+    def build_request_kwargs(cls, url: str) -> dict[str, Any]:
+        # Not used — custom_fetch handles everything.
+        return {}
+
+    @classmethod
+    def parse_response(cls, response: httpx.Response, url: str) -> tuple[str, int]:
+        # Not used — custom_fetch handles everything.
+        raise NotImplementedError("CurlCffiBackend uses custom_fetch, not httpx")
+
+    @classmethod
+    def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
+        """Fetch URL with Chrome's exact TLS fingerprint via curl_cffi.
+
+        Returns ``(html, status_code)`` on success, or ``None`` when the
+        library is not installed or Cloudflare serves a JS challenge that
+        this HTTP-only backend cannot solve (the rotation then falls
+        through to Playwright).
+        """
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError:
+            logger.warning("curl_cffi not installed — skipping CurlCffiBackend")
+            return None
+
+        try:
+            resp = cffi_requests.get(
+                url,
+                impersonate="chrome",
+                timeout=timeout,
+                headers={
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;"
+                        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "curl_cffi got HTTP %d for %s — skipping",
+                    resp.status_code, url,
+                )
+                return None
+
+            # Check for Cloudflare JS challenge in the response body.
+            from core.challenge import is_cloudflare_challenge
+            if is_cloudflare_challenge(resp.text):
+                logger.info(
+                    "curl_cffi: Cloudflare JS challenge detected for %s "
+                    "— falling through to browser backend",
+                    url,
+                )
+                return None
+
+            return resp.text, resp.status_code
+        except Exception as exc:
+            logger.warning("curl_cffi fetch failed for %s: %s", url, exc)
+            return None
+
+
+# ------------------------------------------------------------------
 # Playwright backend (free headless browser, no API key needed)
 # ------------------------------------------------------------------
 
@@ -618,25 +655,10 @@ class PlaywrightBackend(CloudflareBackend):
     @classmethod
     def custom_fetch(cls, url: str, timeout: float) -> tuple[str, int] | None:
         """Launch Chromium, navigate to URL, return rendered HTML.
-
-        Anti-detection strategy (all free, no API keys):
-
-        1. **Stealth patches**: Remove ``navigator.webdriver``, mock
-           ``chrome.runtime``, fake plugins/languages — the most common
-           bot-detection signals.
-        2. **``wait_until="load"``** instead of ``"networkidle"``:
-           avoids 160s timeouts on sites with continuous AJAX.
-        3. **Turnstile auto-resolve**: After load, if the page is a
-           Cloudflare challenge ("Just a moment..."), poll for up to
-           45 seconds waiting for it to auto-resolve — Turnstile runs
-           JS checks and redirects automatically for real browsers.
-        4. **Turnstile checkbox click**: If auto-resolve doesn't work,
-           try clicking the Turnstile checkbox iframe.
+        
+        Includes up to 3 attempts to bypass Cloudflare Turnstile if blocked.
         """
         try:
-            # Try rebrowser-playwright first — it patches CDP detection
-            # that Cloudflare Turnstile uses to identify headless browsers.
-            # Falls back to regular playwright if not installed.
             try:
                 from rebrowser_playwright.sync_api import sync_playwright
                 logger.info("Using rebrowser-playwright (CDP-patched)")
@@ -651,66 +673,69 @@ class PlaywrightBackend(CloudflareBackend):
             )
 
         timeout_ms = int(timeout * 1000)
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/151.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1920, "height": 1080},
-                java_script_enabled=True,
-            )
-            # Apply stealth patches before any page loads.
-            context.add_init_script(cls._STEALTH_JS)
-            page = context.new_page()
-            try:
-                page.goto(url, timeout=timeout_ms, wait_until="load")
-                page.wait_for_timeout(cls._JS_RENDER_WAIT_MS)
+        max_attempts = 3
+        
+        for attempt in range(max_attempts):
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-blink-features=AutomationControlled",
+                    ],
+                )
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        f"Chrome/151.0.0.{attempt} Safari/537.36"
+                    ),
+                    viewport={"width": 1920, "height": 1080},
+                    java_script_enabled=True,
+                )
+                context.add_init_script(cls._STEALTH_JS)
+                page = context.new_page()
+                try:
+                    page.goto(url, timeout=timeout_ms, wait_until="load")
+                    page.wait_for_timeout(cls._JS_RENDER_WAIT_MS)
 
-                # Check for Cloudflare challenge ("Just a moment...").
-                if cls._is_challenge_page(page):
-                    logger.info(
-                        "Playwright: Cloudflare challenge detected on %s — "
-                        "waiting up to %ds for auto-resolve",
-                        url, cls._TURNSTILE_RESOLVE_SECONDS,
-                    )
-                    resolved = False
-                    for i in range(
-                        cls._TURNSTILE_RESOLVE_SECONDS // cls._TURNSTILE_POLL_INTERVAL
-                    ):
-                        page.wait_for_timeout(cls._TURNSTILE_POLL_INTERVAL * 1000)
-                        if not cls._is_challenge_page(page):
-                            resolved = True
-                            logger.info(
-                                "Playwright: Turnstile resolved after ~%ds",
-                                (i + 1) * cls._TURNSTILE_POLL_INTERVAL,
-                            )
-                            break
-                        # Try clicking the Turnstile checkbox on the 2nd poll.
-                        if i == 1:
+                    if cls._is_challenge_page(page):
+                        logger.info(
+                            "Playwright attempt %d: Cloudflare challenge detected on %s — "
+                            "waiting up to %ds for auto-resolve",
+                            attempt + 1, url, cls._TURNSTILE_RESOLVE_SECONDS,
+                        )
+                        resolved = False
+                        for i in range(
+                            cls._TURNSTILE_RESOLVE_SECONDS // cls._TURNSTILE_POLL_INTERVAL
+                        ):
+                            page.wait_for_timeout(cls._TURNSTILE_POLL_INTERVAL * 1000)
+                            if not cls._is_challenge_page(page):
+                                resolved = True
+                                logger.info(
+                                    "Playwright: Turnstile resolved after ~%ds",
+                                    (i + 1) * cls._TURNSTILE_POLL_INTERVAL,
+                                )
+                                break
+                            if i == 1:
+                                cls._try_click_turnstile(page)
+
+                        if not resolved:
                             cls._try_click_turnstile(page)
+                            page.wait_for_timeout(2000)
+                            if cls._is_challenge_page(page):
+                                if attempt < max_attempts - 1:
+                                    logger.warning("Playwright attempt %d failed Turnstile. Retrying...", attempt + 1)
+                                    continue
+                                return None
 
-                    if not resolved:
-                        # Last resort: try one more checkbox click, then give up.
-                        cls._try_click_turnstile(page)
-                        page.wait_for_timeout(2000)
-                        if cls._is_challenge_page(page):
-                            # Return None to let the rotation try the next backend.
-                            return None
-
-                html = page.content()
-                return html, 200
-            finally:
-                context.close()
-                browser.close()
+                    html = page.content()
+                    return html, 200
+                finally:
+                    context.close()
+                    browser.close()
+                    
+        return None
 
 
 # ------------------------------------------------------------------
@@ -748,3 +773,55 @@ def _extract_raw_html(
     if is_cloudflare_challenge(response.text):
         raise CloudflareChallengeError(f"Cloudflare challenge page returned for {url}")
     return response.text, response.status_code
+
+# ------------------------------------------------------------------
+# Subclasses for Multiple Accounts
+# ------------------------------------------------------------------
+
+class ScrapeDoBackendOne(ScrapeDoBackend):
+    name = "scrapedo_one"
+    env_key = "SCRAPE_DO_API_KEY_ONE"
+
+class ScrapeDoBackendTwo(ScrapeDoBackend):
+    name = "scrapedo_two"
+    env_key = "SCRAPE_DO_API_KEY_TWO"
+
+class ScrapeDoBackendThree(ScrapeDoBackend):
+    name = "scrapedo_three"
+    env_key = "SCRAPE_DO_API_KEY_THREE"
+
+class ZenRowsBackendOne(ZenRowsBackend):
+    name = "zenrows_one"
+    env_key = "ZENROWS_API_KEY_ONE"
+
+class ZenRowsBackendTwo(ZenRowsBackend):
+    name = "zenrows_two"
+    env_key = "ZENROWS_API_KEY_TWO"
+
+class ZenRowsBackendThree(ZenRowsBackend):
+    name = "zenrows_three"
+    env_key = "ZENROWS_API_KEY_THREE"
+
+class ScraperAPIBackendOne(ScraperAPIBackend):
+    name = "scraperapi_one"
+    env_key = "SCRAPERAPI_KEY_ONE"
+
+class ScraperAPIBackendTwo(ScraperAPIBackend):
+    name = "scraperapi_two"
+    env_key = "SCRAPERAPI_KEY_TWO"
+
+class ScraperAPIBackendThree(ScraperAPIBackend):
+    name = "scraperapi_three"
+    env_key = "SCRAPERAPI_KEY_THREE"
+
+class ScrapFlyBackendOne(ScrapFlyBackend):
+    name = "scrapfly_one"
+    env_key = "SCRAPFLY_API_KEY_ONE"
+
+class ScrapFlyBackendTwo(ScrapFlyBackend):
+    name = "scrapfly_two"
+    env_key = "SCRAPFLY_API_KEY_TWO"
+
+class ScrapFlyBackendThree(ScrapFlyBackend):
+    name = "scrapfly_three"
+    env_key = "SCRAPFLY_API_KEY_THREE"
