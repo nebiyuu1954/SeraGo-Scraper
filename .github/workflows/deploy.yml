@@ -1,0 +1,45 @@
+name: Deploy Scraper
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies locally
+        run: pip install -r requirements.txt
+
+      - name: Configure SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          known_hosts: unnecessary
+          name: id_ed25519
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Sync files via rsync
+        run: |
+          rsync -avz --delete --exclude-from='rsync_exclude.txt' ./ ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/web_app/repos/SeraGo-Scraper/
+
+      - name: Restart services and migrate
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} "cd /web_app/repos/SeraGo-Scraper && source .venv/bin/activate && pip install -r requirements.txt && python manage.py migrate && sudo /usr/bin/systemctl restart serago-scraper && sudo /usr/bin/systemctl reload nginx"
