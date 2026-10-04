@@ -70,6 +70,7 @@ jobs:
       SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
       NOTIFY_MODE: ${{ vars.NOTIFY_MODE || 'per-run' }}
       DAILY_DIGEST_UTC: ${{ vars.DAILY_DIGEST_UTC || '20:30' }}
     steps:
