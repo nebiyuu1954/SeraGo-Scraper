@@ -118,7 +118,8 @@ class ScrapeLogAdmin(admin.ModelAdmin):
 
     @admin.display(description="Runs (JSON)")
     def runs_pretty(self, obj):
-        return format_html("<pre>{}</pre>", json.dumps(obj.runs, indent=2, default=str))
+        reversed_runs = list(reversed(obj.runs)) if obj.runs else []
+        return format_html("<pre>{}</pre>", json.dumps(reversed_runs, indent=2, default=str))
 
 
 @admin.register(ScrapeStat)
