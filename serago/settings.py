@@ -176,9 +176,27 @@ SCRAPFLY_API_KEY = os.environ.get("SCRAPFLY_API_KEY", "")
 # Anti-bot rotation backends (all optional — the scraper uses whichever are configured).
 # See CLOUDFLARE.md for the full rotation strategy, credit math, and per-service docs.
 ZENROWS_API_KEY = os.environ.get("ZENROWS_API_KEY", "")
+ZENROWS_API_KEY_ONE = os.environ.get("ZENROWS_API_KEY_ONE", "")
+ZENROWS_API_KEY_TWO = os.environ.get("ZENROWS_API_KEY_TWO", "")
+ZENROWS_API_KEY_THREE = os.environ.get("ZENROWS_API_KEY_THREE", "")
+
 SCRAPE_DO_API_KEY = os.environ.get("SCRAPE_DO_API_KEY", "")
+SCRAPE_DO_API_KEY_ONE = os.environ.get("SCRAPE_DO_API_KEY_ONE", "")
+SCRAPE_DO_API_KEY_TWO = os.environ.get("SCRAPE_DO_API_KEY_TWO", "")
+SCRAPE_DO_API_KEY_THREE = os.environ.get("SCRAPE_DO_API_KEY_THREE", "")
+
 SCRAPEBADGER_API_KEY = os.environ.get("SCRAPEBADGER_API_KEY", "")
+
 SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
+SCRAPERAPI_KEY_ONE = os.environ.get("SCRAPERAPI_KEY_ONE", "")
+SCRAPERAPI_KEY_TWO = os.environ.get("SCRAPERAPI_KEY_TWO", "")
+SCRAPERAPI_KEY_THREE = os.environ.get("SCRAPERAPI_KEY_THREE", "")
+
+SCRAPFLY_API_KEY_ONE = os.environ.get("SCRAPFLY_API_KEY_ONE", "")
+SCRAPFLY_API_KEY_TWO = os.environ.get("SCRAPFLY_API_KEY_TWO", "")
+SCRAPFLY_API_KEY_THREE = os.environ.get("SCRAPFLY_API_KEY_THREE", "")
+
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 
 
 # Logging — observable, structured console logs (Flower/Celery later).
