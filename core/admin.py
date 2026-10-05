@@ -10,6 +10,7 @@ from .models import (
     ScrapeStat,
     ScrapedItem,
     Source,
+    SITE_LOG_MODELS,
 )
 
 
@@ -188,3 +189,24 @@ class CategoryStatAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False  # computed read-only
+
+@admin.display(description="Scraped log (JSON)")
+def json_pretty(obj):
+    return format_html("<pre>{}</pre>", json.dumps(obj.scraped_log, indent=2, default=str))
+
+for model in SITE_LOG_MODELS:
+    admin.site.register(
+        model,
+        type(
+            'SiteLogAdmin',
+            (admin.ModelAdmin,),
+            {
+                'ordering': ('-day',),
+                'list_display': ('day', 'source', 'status', 'run_count', 'api_hits', 'items_found', 'items_inserted', 'updated_at'),
+                'list_filter': ('status', 'source'),
+                'readonly_fields': ('day', 'source', 'status', 'run_count', 'api_hits', 'items_found', 'items_inserted', 'items_updated', 'items_skipped', 'json_pretty', 'created_at', 'updated_at'),
+                'exclude': ('scraped_log',),
+                'json_pretty': json_pretty,
+            }
+        )
+    )
