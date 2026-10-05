@@ -108,11 +108,27 @@ class Command(BaseCommand):
 
         text, has_issues = self._format_report(day, is_digest_run)
 
-        if mode == "daily" and not options["force"]:
-            if not (has_issues or is_digest_run):
+        if not options["force"]:
+            from core.models import ScrapeLog
+            master = ScrapeLog.objects.filter(day=day).first()
+            status_changed = False
+            
+            if master and master.runs:
+                if len(master.runs) >= 2:
+                    curr = master.runs[-1]
+                    prev = master.runs[-2]
+                    if curr.get("status") != prev.get("status") or curr.get("unstable_status") != prev.get("unstable_status"):
+                        status_changed = True
+                elif len(master.runs) == 1:
+                    # First run of the day — alert if it started off broken!
+                    curr = master.runs[0]
+                    if curr.get("status") != "success" or curr.get("unstable_status") != "success":
+                        status_changed = True
+
+            if not (status_changed or is_digest_run):
                 self.stdout.write(
                     self.style.SUCCESS(
-                        "Daily mode: run OK and not the end-of-day digest time — nothing sent."
+                        "Run status hasn't changed from the previous run (and not digest time). Nothing sent."
                     )
                 )
                 return
