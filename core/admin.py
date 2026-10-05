@@ -191,7 +191,7 @@ class CategoryStatAdmin(admin.ModelAdmin):
         return False  # computed read-only
 
 @admin.display(description="Scraped log (JSON)")
-def json_pretty(obj):
+def json_pretty(self, obj):
     return format_html("<pre>{}</pre>", json.dumps(obj.scraped_log, indent=2, default=str))
 
 for model in SITE_LOG_MODELS:

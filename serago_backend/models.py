@@ -2,7 +2,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 class AspNetUser(models.Model):
-    id = models.CharField(max_length=450, primary_key=True)
+    id = models.CharField(max_length=450, primary_key=True, db_column="Id")
     user_name = models.CharField(max_length=256, null=True, blank=True, db_column="UserName")
     normalized_user_name = models.CharField(max_length=256, null=True, blank=True, db_column="NormalizedUserName")
     email = models.CharField(max_length=256, null=True, blank=True, db_column="Email")
@@ -23,7 +23,7 @@ class AspNetUser(models.Model):
         return self.email or self.user_name or self.id
 
 class Sector(models.Model):
-    id = models.UUIDField(primary_key=True)
+    id = models.UUIDField(primary_key=True, db_column="Id")
     name = models.CharField(max_length=256, db_column="Name")
     slug = models.CharField(max_length=256, db_column="Slug")
     is_active = models.BooleanField(db_column="IsActive")
@@ -39,7 +39,7 @@ class Sector(models.Model):
         return self.name
 
 class Job(models.Model):
-    id = models.UUIDField(primary_key=True)
+    id = models.UUIDField(primary_key=True, db_column="Id")
     title = models.CharField(max_length=256, db_column="Title")
     company = models.CharField(max_length=256, db_column="Company")
     location = models.CharField(max_length=256, db_column="Location")
