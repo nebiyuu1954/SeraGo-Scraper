@@ -287,7 +287,8 @@ class BaseScraper(ABC):
                     return ScrapedItem.objects.create(
                         source=self.source, external_id=external_id, **insert_data
                     )
-            except IntegrityError:
+            except IntegrityError as exc:
+                logger.error("IntegrityError on _insert_item for %s: %s", external_id, exc)
                 continue
         return None
 
