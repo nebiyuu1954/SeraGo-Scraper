@@ -27,6 +27,19 @@ class TimeStampedModel(models.Model):
     class Meta:
         abstract = True
 
+class SectorClassificationRule(models.Model):
+    """Dynamic rules injected into the AI prompt to guide classification."""
+    rule_text = models.CharField(max_length=512, help_text="e.g. 'Technician jobs belong in Manufacturing unless explicitly IT.'")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        verbose_name = "AI Classification Rule"
+        verbose_name_plural = "AI Classification Rules"
+
+    def __str__(self):
+        return self.rule_text
+
 
 class ScraperType(models.TextChoices):
     GRAPHQL = "graphql", "GraphQL (Hasura)"

@@ -26,3 +26,4 @@ fixtures/auth.User.json
 
 # Local archive previews (manage.py archive_week --out-dir)
 archive_preview/
+my-deployment-plan-progess.md

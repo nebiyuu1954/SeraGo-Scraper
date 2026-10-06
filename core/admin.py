@@ -11,7 +11,14 @@ from .models import (
     ScrapedItem,
     Source,
     SITE_LOG_MODELS,
+    SectorClassificationRule,
 )
+
+@admin.register(SectorClassificationRule)
+class SectorClassificationRuleAdmin(admin.ModelAdmin):
+    list_display = ("rule_text", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("rule_text",)
 
 
 @admin.register(Source)
