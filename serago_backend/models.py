@@ -64,3 +64,72 @@ class Job(models.Model):
 
     def __str__(self):
         return self.title
+
+class TalentProfile(models.Model):
+    user = models.OneToOneField(AspNetUser, primary_key=True, on_delete=models.DO_NOTHING, db_column="UserId")
+    headline = models.CharField(max_length=256, db_column="Headline")
+    about = models.TextField(db_column="About")
+    experience_level = models.IntegerField(db_column="ExperienceLevel", null=True, blank=True)
+    years_of_experience = models.IntegerField(db_column="YearsOfExperience", null=True, blank=True)
+    created_at = models.DateTimeField(db_column="CreatedAt")
+    updated_at = models.DateTimeField(db_column="UpdatedAt")
+
+    class Meta:
+        managed = False
+        db_table = 'TalentProfiles'
+        verbose_name = 'Talent Profile (.NET)'
+        verbose_name_plural = 'Talent Profiles (.NET)'
+
+    def __str__(self):
+        return f"Talent: {self.user}"
+
+class RecruiterProfile(models.Model):
+    user = models.OneToOneField(AspNetUser, primary_key=True, on_delete=models.DO_NOTHING, db_column="UserId")
+    company_name = models.CharField(max_length=256, db_column="CompanyName")
+    industry = models.CharField(max_length=256, db_column="Industry")
+    company_size = models.CharField(max_length=256, db_column="CompanySize")
+    website_url = models.CharField(max_length=256, db_column="WebsiteUrl", null=True, blank=True)
+    created_at = models.DateTimeField(db_column="CreatedAt")
+    updated_at = models.DateTimeField(db_column="UpdatedAt")
+
+    class Meta:
+        managed = False
+        db_table = 'RecruiterProfiles'
+        verbose_name = 'Recruiter Profile (.NET)'
+        verbose_name_plural = 'Recruiter Profiles (.NET)'
+
+    def __str__(self):
+        return self.company_name
+
+class JobApplication(models.Model):
+    id = models.UUIDField(primary_key=True, db_column="Id")
+    job = models.ForeignKey(Job, on_delete=models.DO_NOTHING, db_column="JobId")
+    user = models.ForeignKey(AspNetUser, on_delete=models.DO_NOTHING, db_column="UserId")
+    status = models.IntegerField(db_column="Status")
+    applied_at = models.DateTimeField(db_column="AppliedAt")
+
+    class Meta:
+        managed = False
+        db_table = 'JobApplications'
+        verbose_name = 'Job Application (.NET)'
+        verbose_name_plural = 'Job Applications (.NET)'
+
+    def __str__(self):
+        return f"{self.user} -> {self.job}"
+
+class SavedJob(models.Model):
+    id = models.UUIDField(primary_key=True, db_column="Id")
+    job = models.ForeignKey(Job, on_delete=models.DO_NOTHING, db_column="JobId", null=True, blank=True)
+    user = models.ForeignKey(AspNetUser, on_delete=models.DO_NOTHING, db_column="UserId")
+    title = models.CharField(max_length=256, db_column="Title")
+    company = models.CharField(max_length=256, db_column="Company")
+    saved_at = models.DateTimeField(db_column="SavedAt")
+
+    class Meta:
+        managed = False
+        db_table = 'SavedJobs'
+        verbose_name = 'Saved Job (.NET)'
+        verbose_name_plural = 'Saved Jobs (.NET)'
+
+    def __str__(self):
+        return f"{self.user} saved {self.title}"
