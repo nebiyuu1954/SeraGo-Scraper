@@ -224,6 +224,7 @@ class Command(BaseCommand):
             total_hits = total_found = total_inserted = total_updated = total_skipped = 0
             stable_statuses: list[str] = []
             unstable_statuses: list[str] = []
+            error_sites: list[str] = []
             started_at: str | None = None
             for source in sources:
                 outcome = results.get(source.slug, "failed")
@@ -244,6 +245,9 @@ class Command(BaseCommand):
                         stable_statuses.append(status)
                     else:
                         unstable_statuses.append(status)
+                        
+                    if status != "success":
+                        error_sites.append(source.name)
                     
                     ts = site_run.get("started_at")
                     if ts and (started_at is None or ts < started_at):
@@ -255,25 +259,31 @@ class Command(BaseCommand):
                     else:
                         unstable_statuses.append(status)
                         
+                    if status != "success":
+                        error_sites.append(source.name)
+                        
             if not stable_statuses and not unstable_statuses:
                 return
             if master is None:
                 # No site logged (all mocked, or every run crashed before
                 # logging) — the sweep summary still deserves a master row.
                 master, _ = ScrapeLog.objects.get_or_create(day=day)
-            master.runs.append(
-                {
-                    "run": len(master.runs) + 1,
-                    "time": self._local_time_label(started_at),
-                    "hits": total_hits,
-                    "found": total_found,
-                    "inserted": total_inserted,
-                    "updated": total_updated,
-                    "skipped": total_skipped,
-                    "status": self._worst_status(*stable_statuses) if stable_statuses else ScrapeStatus.SUCCESS,
-                    "unstable_status": self._worst_status(*unstable_statuses) if unstable_statuses else ScrapeStatus.SUCCESS,
-                }
-            )
+                
+            run_entry = {
+                "run": len(master.runs) + 1,
+                "time": self._local_time_label(started_at),
+                "hits": total_hits,
+                "found": total_found,
+                "inserted": total_inserted,
+                "updated": total_updated,
+                "skipped": total_skipped,
+                "status": self._worst_status(*stable_statuses) if stable_statuses else ScrapeStatus.SUCCESS,
+                "unstable_status": self._worst_status(*unstable_statuses) if unstable_statuses else ScrapeStatus.SUCCESS,
+            }
+            if error_sites:
+                run_entry["error_sites"] = ", ".join(error_sites)
+                
+            master.runs.append(run_entry)
             master.save(update_fields=["runs", "updated_at"])
         except Exception:  # noqa: BLE001 - logging must never break the sweep
             logger.exception("Failed to record sweep run for day %s", day)
