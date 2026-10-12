@@ -13,6 +13,10 @@ from __future__ import annotations
 CHALLENGE_MARKERS = (
     "just a moment",
     "challenges.cloudflare.com",
+    "robot challenge screen",
+    "robot challenge",
+    "cf-chl-widget",
+    "attention required! | cloudflare",
 )
 
 

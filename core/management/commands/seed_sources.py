@@ -355,6 +355,7 @@ REPORTER_PAGINATION = {
     # because anti-bot backends with JS rendering take a while.
     "relay": "cloudflare_rotate",
     "timeout": 160.0,
+    "max_source_seconds": 240.0,
     # No from/to vars: the HTML feed can't be filtered by date server-side, so
     # the HtmlScraper drops pre-today items and ends the sweep once a page has
     # no items posted today (published_at is ESTIMATED from the cards' relative
@@ -471,5 +472,6 @@ class Command(BaseCommand):
             "pagination": REPORTER_PAGINATION,
             "scrape_interval_hours": 24,
             "is_active": True,
+            "is_stable": False,
         }
         self._seed_source("reporterjobs", reporterjobs_defaults)

@@ -619,12 +619,21 @@ class PlaywrightBackend(CloudflareBackend):
         """
         try:
             title = page.title().lower()
-            if "just a moment" in title:
+            if any(m in title for m in ("just a moment", "robot challenge", "attention required")):
                 return True
             # Also check body for the challenge script markers.
             body_text = page.evaluate("document.body.innerText")
             lowered = body_text.lower()[:2000]
-            return "just a moment" in lowered or "challenges.cloudflare.com" in lowered
+            return any(
+                m in lowered
+                for m in (
+                    "just a moment",
+                    "challenges.cloudflare.com",
+                    "robot challenge",
+                    "cf-chl-widget",
+                    "attention required",
+                )
+            )
         except Exception:  # noqa: BLE001 — page may have navigated away
             return False
 
@@ -639,7 +648,7 @@ class PlaywrightBackend(CloudflareBackend):
         try:
             # Turnstile iframes have a specific src pattern.
             turnstile_frame = page.frame_locator(
-                "iframe[src*='challenges.cloudflare.com']"
+                "iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']"
             )
             # The checkbox is usually a label or div inside the frame.
             checkbox = turnstile_frame.locator(
@@ -728,6 +737,7 @@ class PlaywrightBackend(CloudflareBackend):
                                     logger.warning("Playwright attempt %d failed Turnstile. Retrying...", attempt + 1)
                                     continue
                                 return None
+                        page.wait_for_timeout(cls._JS_RENDER_WAIT_MS)
 
                     html = page.content()
                     return html, 200

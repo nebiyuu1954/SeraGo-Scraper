@@ -166,6 +166,12 @@ class ReporterJobsScraper(HtmlScraper):
                 html_str = str(raw)
                 size_kb = len(html_str) / 1024
                 snippet = html_str[:200].replace("\n", " ")
+                from core.challenge import CloudflareChallengeError, is_cloudflare_challenge
+                if is_cloudflare_challenge(html_str):
+                    raise CloudflareChallengeError(
+                        f"Cloudflare challenge page detected (title: '{title}'). "
+                        f"Verify the anti-bot proxy or browser bypass."
+                    )
                 raise ScrapeError(
                     f"No job cards (selector: {self._CARD_SELECTOR}) and no site "
                     f"framing (header/nav) found on the page. "

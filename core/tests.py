@@ -3411,6 +3411,15 @@ class SeedSourcesCommandTests(TestCase):
         call_command("seed_sources", stdout=io.StringIO())
         reporter = Source.objects.get(slug="reporterjobs")
         self.assertEqual((reporter.pagination or {}).get("relay"), "cloudflare_rotate")
+        self.assertEqual((reporter.pagination or {}).get("max_source_seconds"), 240.0)
+        self.assertFalse(reporter.is_stable)
+
+    def test_is_cloudflare_challenge_detects_robot_challenge_screen(self):
+        from core.challenge import is_cloudflare_challenge
+        self.assertTrue(is_cloudflare_challenge("<title>Robot Challenge Screen</title>"))
+        self.assertTrue(is_cloudflare_challenge("Just a moment..."))
+        self.assertTrue(is_cloudflare_challenge("<div class='cf-chl-widget'></div>"))
+        self.assertFalse(is_cloudflare_challenge("<html><body><h1>Normal Job Page</h1></body></html>"))
 
 
 class ArchiveWeekCommandTests(TestCase):
