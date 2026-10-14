@@ -676,9 +676,14 @@ class StructureTests(TestCase):
         self.assertEqual(extract_structure(ETHIOJOBS_SAMPLE), ETHIOJOBS_SAMPLE_PATHS)
 
     def test_job_type_code_transform(self):
-        self.assertEqual(transform_job_type_code(8), "OTHER")
+        self.assertEqual(transform_job_type_code(8), "FULL_TIME")
+        self.assertEqual(transform_job_type_code(9), "PART_TIME")
+        self.assertEqual(transform_job_type_code(10), "CONTRACT")
+        self.assertEqual(transform_job_type_code(13), "CONTRACT")
         self.assertEqual(transform_job_type_code(1), "FULL_TIME")
         self.assertEqual(transform_job_type_code(3), "CONTRACT")
+        self.assertEqual(transform_job_type_code(99), "OTHER")
+        self.assertEqual(transform_job_type_code("Full time"), "FULL_TIME")
         self.assertIsNone(transform_job_type_code(None))
 
     def test_strip_html_preserves_block_structure(self):

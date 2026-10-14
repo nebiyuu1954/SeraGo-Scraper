@@ -190,22 +190,50 @@ def transform_parse_datetime(value: Any) -> datetime | None:
     return parsed
 
 
+ETHIOJOBS_TYPE_MAP: dict[int, str] = {
+    1: "FULL_TIME",
+    2: "PART_TIME",
+    3: "CONTRACT",
+    4: "INTERNSHIP",
+    5: "FREELANCE",
+    6: "TEMPORARY",
+    7: "REMOTE",
+    8: "FULL_TIME",   # EthioJobs: Full-time / Permanent
+    9: "PART_TIME",   # EthioJobs: Part-time
+    10: "CONTRACT",   # EthioJobs: Contract / Fixed-term
+    11: "INTERNSHIP", # EthioJobs: Internship
+    12: "FREELANCE",  # EthioJobs: Freelance
+    13: "CONTRACT",   # EthioJobs: Consultancy / Tender / Contract (TOR)
+}
+
+
 def transform_job_type_code(value: Any) -> str | None:
     """Map a numeric job-type code to the shared JobType string (EthioJobs)."""
     if value is None:
         return None
     try:
-        return {
-            1: "FULL_TIME",
-            2: "PART_TIME",
-            3: "CONTRACT",
-            4: "INTERNSHIP",
-            5: "FREELANCE",
-            6: "TEMPORARY",
-            7: "REMOTE",
-        }.get(int(value), "OTHER")
+        val_int = int(value)
+        if val_int in ETHIOJOBS_TYPE_MAP:
+            return ETHIOJOBS_TYPE_MAP[val_int]
     except (TypeError, ValueError):
-        return "OTHER"
+        pass
+
+    val_str = str(value).strip().lower()
+    if "full" in val_str or "permanent" in val_str:
+        return "FULL_TIME"
+    if "part" in val_str:
+        return "PART_TIME"
+    if "contract" in val_str or "consult" in val_str:
+        return "CONTRACT"
+    if "intern" in val_str:
+        return "INTERNSHIP"
+    if "free" in val_str:
+        return "FREELANCE"
+    if "temp" in val_str:
+        return "TEMPORARY"
+    if "remote" in val_str:
+        return "REMOTE"
+    return "OTHER"
 
 
 TRANSFORMS: dict[str, Callable[[Any], Any]] = {
@@ -553,7 +581,36 @@ class BaseScraper(ABC):
                 if name in TRANSFORMS:
                     value = TRANSFORMS[name](value)
             normalized[target] = value
+
+        # Defense-in-depth: if job_type is empty or "OTHER", attempt to infer
+        # from employment keywords in description or title.
+        if normalized.get("job_type") in ("OTHER", None, ""):
+            inferred = self._infer_job_type_from_text(
+                raw_item=raw_item,
+                description=str(normalized.get("description") or ""),
+                title=str(normalized.get("title") or ""),
+            )
+            if inferred and inferred != "OTHER":
+                normalized["job_type"] = inferred
+
         return normalized
+
+    @staticmethod
+    def _infer_job_type_from_text(raw_item: dict, description: str, title: str) -> str:
+        text = f"{title} {description}".lower()
+        if re.search(r"\b(full[- ]time|permanent|fulltime)\b", text):
+            return "FULL_TIME"
+        if re.search(r"\b(part[- ]time|parttime)\b", text):
+            return "PART_TIME"
+        if re.search(r"\b(internship|intern)\b", text):
+            return "INTERNSHIP"
+        if re.search(r"\b(contract(ual)?|fixed[- ]term|consultan(t|cy)|tor\b)", text):
+            return "CONTRACT"
+        if re.search(r"\b(freelance|freelancer)\b", text):
+            return "FREELANCE"
+        if re.search(r"\b(temporary|temp)\b", text):
+            return "TEMPORARY"
+        return "OTHER"
 
     def content_hash(self, item: dict) -> str:
         """Dedup fingerprint: SHA-256 of title|company|location|job_type|url.
