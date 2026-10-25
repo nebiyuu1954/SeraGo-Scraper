@@ -641,6 +641,16 @@ class BaseScraper(ABC):
             str(item.get("external_id") or ""),
         )
 
+    def _recent_known_ids(self, days: int = 14) -> set[str]:
+        """External ids already stored within the active window (default 14 days)."""
+        cutoff = timezone.now() - timedelta(days=days)
+        return set(
+            ScrapedItem.objects.filter(
+                source=self.source,
+                created_at__gte=cutoff,
+            ).values_list("external_id", flat=True)
+        )
+
     def _today_known_ids(self) -> set[str]:
         """External ids already stored for today — the incremental stop boundary."""
         today = timezone.localdate()
@@ -1269,16 +1279,16 @@ class BaseScraper(ABC):
         if max_pages is None:
             max_pages = int(pagination.get("max_pages", 50))
 
-        # The incremental stop boundary: ids already stored for today. Only
-        # used in today-only mode (a --no-today backfill must not stop early)
+        # The incremental stop boundary: ids already stored within the active window (14 days).
+        # Only used in today-only mode (a --no-today backfill must not stop early)
         # and only when the previous run completed cleanly (so the stored set
-        # is a complete snapshot of the day). The stop itself relies on the
+        # is a complete snapshot). The stop itself relies on the
         # query's newest-first order_by: new jobs only ever appear above the
         # boundary, so once a page contains a known id, everything below it
         # is already stored. Computed BEFORE this run is logged so the safety
         # check sees the previous run, not our just-appended one.
-        today_ids = (
-            self._today_known_ids() if (self.only_today and self._incremental_stop_safe()) else set()
+        recent_ids = (
+            self._recent_known_ids(days=14) if (self.only_today and self._incremental_stop_safe()) else set()
         )
 
         run = self._new_run(0)
@@ -1311,7 +1321,7 @@ class BaseScraper(ABC):
                     # (either mode). Pages whose items were ALL pre-today and
                     # filtered out also land here and stop the sweep.
                     break
-                if any(pid in today_ids for pid in page_ids):
+                if any(pid in recent_ids for pid in page_ids):
                     # Reached the last known record — everything newer was new.
                     break
                 if self.only_today and self._past_today_boundary(page, items):
